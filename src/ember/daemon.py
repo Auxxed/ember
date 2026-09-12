@@ -14,9 +14,10 @@ from typing import Any, Optional
 
 from . import history
 from .ble import PuffcoBLE
-from .constants import AnimationCode, OperatingState
+from .constants import PROFILE_COUNT, AnimationCode, OperatingState
 from .paths import load_config, log_path, save_config, socket_path
 from .product_info import is_proxy
+from .utils import PuffcoUtils
 
 log = logging.getLogger("ember.daemon")
 
@@ -32,6 +33,23 @@ HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
     int(OperatingState.HEAT_CYCLE_ACTIVE),
 }
+
+# Peak Pro's own firmware/app range. Enforced here so no client (GUI, CLI,
+# or a raw RPC call) can push the heater past what the hardware is rated
+# for — this is the one chokepoint every profile write passes through.
+MIN_TEMP_F, MAX_TEMP_F = 400.0, 620.0
+MIN_TIME_S, MAX_TIME_S = 5.0, 180.0
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _validate_index(args: dict) -> int:
+    index = int(args["index"])
+    if not 0 <= index < PROFILE_COUNT:
+        raise ValueError(f"Profile index must be 0-{PROFILE_COUNT - 1}")
+    return index
 
 
 class EmberDaemon:
@@ -351,31 +369,41 @@ class EmberDaemon:
             await self._broadcast_event("status", self.status)
             return self.brightness
         if cmd == "set_profile":
-            index = int(args["index"])
+            index = _validate_index(args)
             await dev.set_current_profile(index)
             self.status["current_profile"] = index
             await self._broadcast_event("status", self.status)
             return {"current_profile": index}
         if cmd == "set_profile_name":
-            await dev.set_profile_name(int(args["index"]), str(args["name"]))
+            index = _validate_index(args)
+            await dev.set_profile_name(index, str(args["name"]))
             return await self.handle("refresh", {})
         if cmd == "set_profile_temp":
-            index = int(args["index"])
+            index = _validate_index(args)
             if "celsius" in args:
-                await dev.set_profile_temp_c(index, float(args["celsius"]))
+                fahrenheit = PuffcoUtils.c_to_f(float(args["celsius"]))
             else:
-                await dev.set_profile_temp_f(index, float(args["fahrenheit"]))
+                fahrenheit = float(args["fahrenheit"])
+            fahrenheit = _clamp(fahrenheit, MIN_TEMP_F, MAX_TEMP_F)
+            await dev.set_profile_temp_c(index, PuffcoUtils.f_to_c(fahrenheit))
             return await self.handle("refresh", {})
         if cmd == "set_profile_time":
-            await dev.set_profile_time(int(args["index"]), float(args["seconds"]))
+            index = _validate_index(args)
+            seconds = _clamp(float(args["seconds"]), MIN_TIME_S, MAX_TIME_S)
+            await dev.set_profile_time(index, seconds)
             return await self.handle("refresh", {})
         if cmd == "set_profile_color":
-            await dev.set_profile_solid_color(args.get("index"), str(args["hex"]))
+            index = args.get("index")
+            if index is not None:
+                index = _validate_index({"index": index})
+            await dev.set_profile_solid_color(index, str(args["hex"]))
             return await self.handle("refresh", {})
         if cmd == "set_animation":
             name = str(args.get("anim", "solid")).lower()
             colors = args.get("colors") or [args.get("hex") or "#ffffff"]
             index = args.get("index")
+            if index is not None:
+                index = _validate_index({"index": index})
             if name == "solid":
                 await dev.set_profile_solid_color(index, colors[0])
             else:
@@ -468,9 +496,19 @@ class EmberDaemon:
                 self.socket_path.unlink()
             except OSError:
                 pass
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.socket_path.parent, 0o700)
         self._loop = asyncio.get_running_loop()
-        self._server = await asyncio.start_unix_server(self._client, path=str(self.socket_path))
+        # Belt-and-suspenders against another local user connecting in the
+        # instant between bind() and the chmod below: bind() creates the
+        # socket file with umask-derived permissions, so tighten the umask
+        # first (the parent dir being 0700 already blocks other users, but
+        # this also covers XDG_RUNTIME_DIR overrides with looser modes).
+        old_umask = os.umask(0o077)
+        try:
+            self._server = await asyncio.start_unix_server(self._client, path=str(self.socket_path))
+        finally:
+            os.umask(old_umask)
         os.chmod(self.socket_path, 0o600)
         log.info("Listening on %s", self.socket_path)
 

@@ -30,7 +30,7 @@ def daemon_running() -> bool:
 def ensure_daemon(timeout: float = 8.0) -> None:
     if daemon_running():
         return
-    runtime_dir().mkdir(parents=True, exist_ok=True)
+    runtime_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
     log = log_path()
     env = os.environ.copy()
     src = str(project_root() / "src")
