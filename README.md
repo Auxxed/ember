@@ -1,5 +1,7 @@
 # Ember
 
+[![tests](https://github.com/Auxxed/ember/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/ember/actions/workflows/tests.yml)
+
 Peak Pro companion for Linux. Not affiliated with Puffco. Firmware updates can
 break the unofficial Lorax BLE protocol.
 
@@ -89,6 +91,18 @@ Optional floating window rules are in `packaging/hyprland.conf`.
 | B | Boost |
 | S | Stop |
 | 1–4 | Profiles |
+
+## Tests
+
+```bash
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m pytest
+```
+
+The suite covers the logic that can break silently — the CBOR/colour codec,
+dab-history date maths, config and profile limits, and the daemon liveness
+probe. The BLE and GTK layers need real hardware and a display, so they're
+exercised by hand rather than in CI.
 
 ## Uninstall
 
