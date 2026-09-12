@@ -5,6 +5,8 @@ break the unofficial Lorax BLE protocol.
 
 Ember talks to a **Peak Pro only**. Proxy and Pivot are rejected on purpose.
 
+![Ember GTK4 app](docs/screenshot.png)
+
 ## What you get
 
 - GTK4 app: live chamber temp, heat / boost / stop, four profiles, lantern,
