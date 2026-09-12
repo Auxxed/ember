@@ -160,8 +160,12 @@ class PuffcoBLE:
         return any(hint in lowered for hint in PEAK_PRO_NAME_HINTS)
 
     async def scan(self, timeout: float = 6.0) -> list[dict[str, str]]:
+        from . import bluez
+
         found: dict[str, dict[str, str]] = {}
-        discovered = await BleakScanner.discover(timeout=timeout, return_adv=True)
+        discovered = await BleakScanner.discover(
+            timeout=timeout, return_adv=True, **await bluez.bleak_args()
+        )
         for address, (device, adv) in discovered.items():
             name = device.name or adv.local_name or ""
             uuids = list(adv.service_uuids or [])
@@ -187,6 +191,8 @@ class PuffcoBLE:
         return False
 
     async def search_for_device(self, timeout: float = 10.0) -> Optional[BLEDevice]:
+        from . import bluez
+
         if not self.device_mac and not self.device_name:
             hits = await self.scan(timeout=timeout)
             if len(hits) == 1:
@@ -201,8 +207,11 @@ class PuffcoBLE:
                 )
 
         self._dbg("Scanning for devices...")
+        bleak_args = await bluez.bleak_args()
         if self.device_mac:
-            device = await BleakScanner.find_device_by_address(self.device_mac, timeout=timeout)
+            device = await BleakScanner.find_device_by_address(
+                self.device_mac, timeout=timeout, **bleak_args
+            )
             if device:
                 return device
 
@@ -211,6 +220,7 @@ class PuffcoBLE:
                 d.name or ad.local_name, list(ad.service_uuids or [])
             ),
             timeout=timeout,
+            **bleak_args,
         )
 
     async def _gatt_connect(self, address: str) -> BleakClient:
@@ -240,6 +250,7 @@ class PuffcoBLE:
             disconnected_callback=self._on_disconnected,
             timeout=15.0,
             pair=False,
+            **await bluez.bleak_args(),
         )
         await client.connect()
         try:
@@ -313,7 +324,9 @@ class PuffcoBLE:
                     self.client = None
                     # Refresh the BlueZ device object, then stop discovery again.
                     try:
-                        await BleakScanner.find_device_by_address(address, timeout=5.0)
+                        await BleakScanner.find_device_by_address(
+                            address, timeout=5.0, **await bluez.bleak_args()
+                        )
                     except Exception:
                         pass
                     await bluez.stop_discovery()

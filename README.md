@@ -36,6 +36,18 @@ Needs Python 3.10+, GTK4, libadwaita, BlueZ. BLE libraries are installed into
 Wake the Peak Pro, keep it next to the PC, and disconnect the phone app. The
 radio only accepts one client.
 
+## Bluetooth adapter
+
+Ember picks the first powered adapter BlueZ reports, which is what you want on
+almost every machine. If you have more than one radio and need to pin a
+specific one, set it in `~/.config/ember/config.json`:
+
+```json
+{ "adapter": "hci1" }
+```
+
+`bluetoothctl list` shows what you have.
+
 ## CLI
 
 ```bash

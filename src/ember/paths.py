@@ -15,6 +15,7 @@ SOCKET_NAME = "ember.sock"
 DEFAULTS: dict[str, Any] = {
     "device_mac": "",
     "device_name": "",
+    "adapter": "",  # "" auto-detects; set "hci1" to pin a specific radio
     "auto_connect": True,
     "units": "F",
     "notify_ready": True,
