@@ -21,6 +21,7 @@ DEFAULTS: dict[str, Any] = {
     "notify_ready": True,
     "notify_low_battery": True,
     "poll_interval": 1.5,
+    "last_fact": -1,
 }
 
 

@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
 
+from ..facts import pick_fact
 from ..paths import load_config, save_config
 from .bridge import Bridge
 
@@ -42,13 +43,15 @@ class EmberWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application, bridge: Bridge):
         super().__init__(application=app, title="Ember")
         self.bridge = bridge
-        self.set_default_size(400, 740)
+        self.set_default_size(390, 716)
         self.add_css_class("ember-window")
         self._busy = False
         self._syncing = False
         self._debounces: dict[str, int] = {}
         self._devices: list[dict] = []
         self._editor_key: tuple | None = None
+        self.fact_labels: list[Gtk.Label] = []
+        self._fact_index, self._fact_text = self._next_fact()
         self._build()
         bridge.on_status = self.apply_status
         bridge.on_error = self._toast
@@ -114,7 +117,7 @@ class EmberWindow(Adw.ApplicationWindow):
         add("quit", lambda *_: self.close())
 
     def _setup_page(self) -> Gtk.Widget:
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         page.add_css_class("ember-body")
         page.set_valign(Gtk.Align.CENTER)
 
@@ -135,7 +138,7 @@ class EmberWindow(Adw.ApplicationWindow):
         self.last_btn.connect("clicked", self._connect_saved)
         page.append(self.last_btn)
 
-        scan_row = Gtk.Box(spacing=8)
+        scan_row = Gtk.Box(spacing=6)
         self.scan_btn = Gtk.Button(label="Scan")
         self.scan_btn.add_css_class("ember-boost")
         self.scan_btn.set_hexpand(True)
@@ -152,6 +155,7 @@ class EmberWindow(Adw.ApplicationWindow):
         self.setup_status = Gtk.Label(label="")
         self.setup_status.add_css_class("ember-sub")
         page.append(self.setup_status)
+        page.append(self._fact_card())
         self._refresh_saved_button()
         return page
 
@@ -160,11 +164,11 @@ class EmberWindow(Adw.ApplicationWindow):
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         scroller.set_vexpand(True)
 
-        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=7)
         page.add_css_class("ember-body")
         scroller.set_child(page)
 
-        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
         hero.add_css_class("ember-hero")
         hero.set_halign(Gtk.Align.CENTER)
         self.hero = hero
@@ -179,7 +183,7 @@ class EmberWindow(Adw.ApplicationWindow):
         hero.append(self.meta_label)
         page.append(hero)
 
-        actions = Gtk.Box(spacing=8)
+        actions = Gtk.Box(spacing=6)
         self.heat_btn = Gtk.Button(label="HEAT")
         self.heat_btn.add_css_class("ember-heat")
         self.heat_btn.set_hexpand(True)
@@ -196,7 +200,7 @@ class EmberWindow(Adw.ApplicationWindow):
         page.append(actions)
 
         page.append(self._section("PROFILES"))
-        grid = Gtk.Grid(column_spacing=8, row_spacing=8, column_homogeneous=True)
+        grid = Gtk.Grid(column_spacing=6, row_spacing=6, column_homogeneous=True)
         self.profile_btns: list[Gtk.Button] = []
         self.profile_names: list[Gtk.Label] = []
         self.profile_metas: list[Gtk.Label] = []
@@ -206,7 +210,7 @@ class EmberWindow(Adw.ApplicationWindow):
             grid.attach(btn, i % 2, i // 2, 1, 1)
         page.append(grid)
 
-        self.editor = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.editor = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.editor.add_css_class("ember-card")
         self.name_entry = Gtk.Entry()
         self.name_entry.add_css_class("ember-entry")
@@ -226,7 +230,7 @@ class EmberWindow(Adw.ApplicationWindow):
         self.time_scale.connect("value-changed", self._time_changed)
         self.editor.append(self.time_scale)
 
-        color_row = Gtk.Box(spacing=8)
+        color_row = Gtk.Box(spacing=6)
         color_row.set_halign(Gtk.Align.START)
         self.color_btn = Gtk.ColorDialogButton(dialog=Gtk.ColorDialog())
         self.color_btn.connect("notify::rgba", self._color_changed)
@@ -242,9 +246,9 @@ class EmberWindow(Adw.ApplicationWindow):
         page.append(self.editor)
 
         page.append(self._section("LIGHTS"))
-        lights = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        lights = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         lights.add_css_class("ember-card")
-        lantern_row = Gtk.Box(spacing=8)
+        lantern_row = Gtk.Box(spacing=6)
         lantern_row.append(Gtk.Label(label="Lantern", xalign=0, hexpand=True))
         self.lantern_switch = Gtk.Switch()
         self.lantern_switch.set_valign(Gtk.Align.CENTER)
@@ -256,7 +260,7 @@ class EmberWindow(Adw.ApplicationWindow):
         self.bright_scale.set_value(80)
         self.bright_scale.connect("value-changed", self._brightness_changed)
         lights.append(self.bright_scale)
-        anims = Gtk.Box(spacing=6)
+        anims = Gtk.Box(spacing=5)
         for name in ("solid", "breathing", "rising", "circling"):
             btn = Gtk.Button(label=name.title())
             btn.add_css_class("ember-boost")
@@ -266,16 +270,16 @@ class EmberWindow(Adw.ApplicationWindow):
         page.append(lights)
 
         page.append(self._section("DEVICE"))
-        device = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        device = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         device.add_css_class("ember-card")
-        stealth_row = Gtk.Box(spacing=8)
+        stealth_row = Gtk.Box(spacing=6)
         stealth_row.append(Gtk.Label(label="Stealth", xalign=0, hexpand=True))
         self.stealth_switch = Gtk.Switch()
         self.stealth_switch.set_valign(Gtk.Align.CENTER)
         self.stealth_switch.connect("state-set", self._stealth_toggled)
         stealth_row.append(self.stealth_switch)
         device.append(stealth_row)
-        power = Gtk.Box(spacing=8)
+        power = Gtk.Box(spacing=6)
         sleep_btn = Gtk.Button(label="Sleep")
         sleep_btn.add_css_class("ember-boost")
         sleep_btn.set_hexpand(True)
@@ -293,6 +297,7 @@ class EmberWindow(Adw.ApplicationWindow):
         power.append(disc_btn)
         device.append(power)
         page.append(device)
+        page.append(self._fact_card())
         return scroller
 
     def _profile_button(self, index: int) -> Gtk.Button:
@@ -317,6 +322,37 @@ class EmberWindow(Adw.ApplicationWindow):
         label = Gtk.Label(label=text, xalign=0)
         label.add_css_class("ember-section")
         return label
+
+    def _next_fact(self) -> tuple[int, str]:
+        cfg = load_config()
+        index, text = pick_fact(int(cfg.get("last_fact", -1)))
+        cfg["last_fact"] = index
+        save_config(cfg)
+        return index, text
+
+    def _fact_card(self) -> Gtk.Widget:
+        button = Gtk.Button()
+        button.add_css_class("fact-card")
+        button.set_tooltip_text("Another one")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        heading = Gtk.Label(label="DID YOU KNOW", xalign=0)
+        heading.add_css_class("fact-heading")
+        body = Gtk.Label(label=self._fact_text, xalign=0)
+        body.add_css_class("fact-body")
+        body.set_wrap(True)
+        body.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        body.set_max_width_chars(42)
+        box.append(heading)
+        box.append(body)
+        button.set_child(box)
+        button.connect("clicked", lambda *_: self._cycle_fact())
+        self.fact_labels.append(body)
+        return button
+
+    def _cycle_fact(self) -> None:
+        self._fact_index, self._fact_text = self._next_fact()
+        for label in self.fact_labels:
+            label.set_text(self._fact_text)
 
     def _paint(self, widget: Gtk.Widget, color: str) -> None:
         css = Gtk.CssProvider()
