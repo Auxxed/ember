@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Ember
+Comment=Peak Pro companion
+Exec=ember
+Icon=ember
+Terminal=false
+Type=Application
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=app.ember.Ember
+Keywords=peak;pro;puffco;vaporizer;
