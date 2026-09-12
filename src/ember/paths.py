@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,30 @@ def log_path() -> Path:
     return runtime_dir() / "emberd.log"
 
 
+def write_json_atomic(path: Path, data: Any, *, indent: int | None = None) -> None:
+    """Write JSON through a temp file and rename.
+
+    The daemon and the GUI both write these files, and a crash or a full
+    disk part-way through a plain write leaves a truncated file that the
+    next load silently discards.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent=indent)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def load_config() -> dict[str, Any]:
     path = config_path()
     data = dict(DEFAULTS)
@@ -68,8 +93,6 @@ def load_config() -> dict[str, Any]:
 
 
 def save_config(data: dict[str, Any]) -> None:
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
     merged = dict(DEFAULTS)
     merged.update(data)
-    path.write_text(json.dumps(merged, indent=2) + "\n")
+    write_json_atomic(config_path(), merged, indent=2)

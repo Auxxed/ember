@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from .paths import data_dir
+from .paths import data_dir, write_json_atomic
 
 RETENTION_DAYS = 730
 
@@ -44,9 +44,7 @@ def _load() -> dict[str, Any]:
 
 
 def _save(data: dict[str, Any]) -> None:
-    path = history_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data) + "\n")
+    write_json_atomic(history_path(), data)
 
 
 def record_total(total_dabs: Optional[int]) -> Optional[dict[str, Any]]:

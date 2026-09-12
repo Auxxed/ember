@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -23,8 +24,24 @@ def python_executable() -> str:
 
 
 def daemon_running() -> bool:
+    """Probe the socket rather than trusting the file.
+
+    A daemon killed with SIGKILL leaves its socket file behind. Taking
+    that file as proof of life meant we never respawned, and every call
+    failed with 'connection refused' until it was deleted by hand.
+    """
     sock = socket_path()
-    return sock.exists()
+    if not sock.exists():
+        return False
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(0.5)
+    try:
+        probe.connect(str(sock))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
 
 
 def ensure_daemon(timeout: float = 8.0) -> None:

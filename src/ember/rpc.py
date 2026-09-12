@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -141,8 +140,3 @@ class EmberClient:
                 if not fut.done():
                     fut.set_exception(RuntimeError("Daemon disconnected"))
             self._pending.clear()
-
-
-def daemon_pid_alive(path: Path | None = None) -> bool:
-    sock = path or socket_path()
-    return sock.exists() and os.path.exists(str(sock))

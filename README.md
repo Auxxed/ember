@@ -24,8 +24,8 @@ and the [OldGrowthCrypto Linux/BlueZ fork](https://github.com/OldGrowthCrypto/Pu
 ## Install
 
 ```bash
-cd ~/Work/ember
-chmod +x install.sh
+git clone https://github.com/Auxxed/ember.git
+cd ember
 ./install.sh
 ember
 ```
