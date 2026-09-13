@@ -84,7 +84,7 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
             pass
     print(
         f"  chamber {data.get('chamber')}   stealth {data.get('stealth')}"
-        f"   lantern {lantern}"
+        f"   lantern {lantern}   saver {data.get('battery_saver')}"
     )
     extra = ""
     if data.get("birthday_label"):
@@ -287,6 +287,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     stealth = sub.add_parser("stealth")
     stealth.add_argument("action", choices=["on", "off"])
 
+    saver = sub.add_parser("saver", help="Sleep the Peak 30 s after each session, turning the lantern off first")
+    saver.add_argument("action", choices=["on", "off"])
+
     name = sub.add_parser("name", help="Rename the Peak")
     name.add_argument("value", nargs="?", help="New device name")
 
@@ -448,6 +451,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         print(json.dumps(await call("poke", {"path": args.path, "hex": args.hex}), indent=2 if raw else None, default=str))
     elif cmd == "stealth":
         await call("set_stealth", {"enable": args.action == "on"})
+        print_status(await call("status"), raw)
+    elif cmd == "saver":
+        await call("set_battery_saver", {"enable": args.action == "on"})
         print_status(await call("status"), raw)
     elif cmd == "name":
         if not args.value:

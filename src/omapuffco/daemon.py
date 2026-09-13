@@ -28,6 +28,27 @@ HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
     int(OperatingState.HEAT_CYCLE_ACTIVE),
 }
+CYCLE_STATES = HEAT_STATES | {int(OperatingState.HEAT_CYCLE_FADE)}
+# After a cycle returns to idle, wait so a second dab isn't cut off.
+BATTERY_SAVER_SLEEP_S = 30.0
+
+
+def _as_bool(value: Any) -> bool:
+    # A hand-edited config or raw RPC can carry "false", which bool() calls true.
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "on", "yes"}
+    return bool(value)
+
+
+def cycle_just_ended(prev_state: Any, new_state: Any) -> bool:
+    """True when a heat cycle (preheat / ready / cool) lands back on idle."""
+    try:
+        prev = int(prev_state)
+        new = int(new_state)
+    except (TypeError, ValueError):
+        return False
+    return prev in CYCLE_STATES and new == int(OperatingState.IDLE)
+
 
 # Peak Pro's own firmware/app range. Enforced here so no client (CLI or a
 # raw RPC call) can push the heater past what the hardware is rated for —
@@ -71,8 +92,12 @@ class OmaPuffcoDaemon:
         self.lantern = False
         self.brightness = {"base": 80, "mid": 80, "glass": 80, "logo": 80}
         self.poll_interval = 1.5
+        self.battery_saver = _as_bool(load_config().get("battery_saver"))
+        self._last_user_cmd = float("-inf")
+        self._saver_sleep_task: Optional[asyncio.Task] = None
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self.status["battery_saver"] = self.battery_saver
 
     @staticmethod
     def _empty_status() -> dict[str, Any]:
@@ -100,6 +125,7 @@ class OmaPuffcoDaemon:
             "stealth": False,
             "lantern": False,
             "lantern_timeout": None,
+            "battery_saver": False,
             "birthday": None,
             "birthday_label": "",
             "dabs_remaining": 0,
@@ -134,10 +160,15 @@ class OmaPuffcoDaemon:
             break
         return meta
 
-    def _apply_snapshot(self, snap: dict[str, Any]) -> None:
-        """Merge a full device snapshot into status and refresh telemetry."""
+    def _stamp_local(self, snap: dict[str, Any]) -> dict[str, Any]:
         snap["lantern"] = self.lantern
         snap["brightness"] = dict(self.brightness)
+        snap["battery_saver"] = self.battery_saver
+        return snap
+
+    def _apply_snapshot(self, snap: dict[str, Any]) -> None:
+        """Merge a full device snapshot into status and refresh telemetry."""
+        self._stamp_local(snap)
         total = snap.get("total_dabs")
         history.record_total(total)
         if total is None:
@@ -288,6 +319,7 @@ class OmaPuffcoDaemon:
     async def _disconnect(self, forget: bool = False) -> dict:
         if forget:
             self._want_connected = False
+        self._cancel_saver_sleep()
         self._stop_poll()
         if self.device:
             try:
@@ -296,6 +328,7 @@ class OmaPuffcoDaemon:
                 pass
             self.device = None
         self.status = self._empty_status()
+        self.status["battery_saver"] = self.battery_saver
         await self._broadcast_event("status", self.status)
         return self.status
 
@@ -320,11 +353,15 @@ class OmaPuffcoDaemon:
                         self._apply_snapshot(snap)
                     else:
                         snap = await self.device.poll_fast()
-                        snap["lantern"] = self.lantern
-                        snap["brightness"] = dict(self.brightness)
+                        self._stamp_local(snap)
                         self.status.update(snap)
                     await self._broadcast_event("status", self.status)
                     new_state = self.status.get("operating_state_id")
+                    if self.battery_saver:
+                        if new_state in CYCLE_STATES:
+                            self._cancel_saver_sleep()
+                        elif cycle_just_ended(prev_state, new_state):
+                            self._schedule_saver_sleep()
                     if prev_state != new_state and new_state == int(OperatingState.HEAT_CYCLE_ACTIVE):
                         history.record_cycle(**self._cycle_meta())
                         self.status["telemetry"] = history.get_stats()
@@ -355,6 +392,70 @@ class OmaPuffcoDaemon:
         if self._poll_task:
             self._poll_task.cancel()
             self._poll_task = None
+
+    def _cancel_saver_sleep(self) -> None:
+        task = self._saver_sleep_task
+        self._saver_sleep_task = None
+        if task and not task.done():
+            task.cancel()
+
+    def _schedule_saver_sleep(self) -> None:
+        if self._saver_sleep_task and not self._saver_sleep_task.done():
+            return
+        self._saver_sleep_task = asyncio.create_task(self._run_saver_sleep())
+        self._tasks.add(self._saver_sleep_task)
+        self._saver_sleep_task.add_done_callback(self._tasks.discard)
+
+    async def _run_saver_sleep(self) -> None:
+        try:
+            await asyncio.sleep(BATTERY_SAVER_SLEEP_S)
+            async with self._cmd_lock:
+                if not self.battery_saver:
+                    return
+                # Someone is using the Peak from the panel or CLI; don't sleep it under them.
+                if time.monotonic() - self._last_user_cmd < BATTERY_SAVER_SLEEP_S:
+                    return
+                dev = self.device
+                if not dev or not dev.is_connected:
+                    return
+                # The last poll can be seconds old, and a press of the Peak's
+                # own button may have started a cycle since.
+                state = int(await dev.get_operating_state())
+                self.status["operating_state_id"] = state
+                if state != int(OperatingState.IDLE):
+                    return
+                if self.lantern:
+                    try:
+                        await dev.stop_lantern()
+                        self.lantern = False
+                        self.status["lantern"] = False
+                    except Exception:
+                        log.debug("battery saver: lantern off failed", exc_info=True)
+                await dev.enter_sleep_mode()
+                log.info("Battery saver: slept Peak after idle")
+                await self._broadcast_event("status", self.status)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("Battery saver sleep failed: %s", exc)
+
+    async def _set_battery_saver(self, enable: bool) -> dict[str, Any]:
+        self.battery_saver = bool(enable)
+        if not self.battery_saver:
+            self._cancel_saver_sleep()
+        cfg = load_config()
+        cfg["battery_saver"] = self.battery_saver
+        save_config(cfg)
+        self.status["battery_saver"] = self.battery_saver
+        if self.battery_saver and self.device and self.device.is_connected and self.lantern:
+            try:
+                await self.device.stop_lantern()
+                self.lantern = False
+                self.status["lantern"] = False
+            except Exception:
+                log.debug("battery saver: lantern off failed", exc_info=True)
+        await self._broadcast_event("status", self.status)
+        return {"battery_saver": self.battery_saver}
 
     async def handle(self, cmd: str, args: dict) -> Any:
         args = args or {}
@@ -392,7 +493,11 @@ class OmaPuffcoDaemon:
             cfg = load_config()
             cfg.update(args)
             save_config(cfg)
-            return cfg
+            if "battery_saver" in args:
+                await self._set_battery_saver(_as_bool(args.get("battery_saver")))
+            return load_config()
+        if cmd == "set_battery_saver":
+            return await self._set_battery_saver(_as_bool(args.get("enable")))
         if cmd == "peek":
             path = str(args["path"])
             size = int(args.get("size") or 12)
@@ -421,8 +526,10 @@ class OmaPuffcoDaemon:
             return stats
 
         dev = self._require_device()
+        self._last_user_cmd = time.monotonic()
 
         if cmd == "start_heat":
+            self._cancel_saver_sleep()
             await dev.start_heat_cycle()
             return {"ok": True}
         if cmd == "stop_heat":
@@ -572,9 +679,11 @@ class OmaPuffcoDaemon:
             await dev.show_version()
             return {"ok": True}
         if cmd == "sleep":
+            self._cancel_saver_sleep()
             await dev.enter_sleep_mode()
             return {"ok": True}
         if cmd == "power_off":
+            self._cancel_saver_sleep()
             await dev.power_off()
             return {"ok": True}
         if cmd == "factory_reset":

@@ -73,6 +73,7 @@ Panel {
       pendingBoostTimes = ({})
       pendingStealth = undefined
       pendingLantern = undefined
+      pendingSaver = undefined
       pendingLanternTimeout = -1
       pendingBrightness = -1
       pendingDeviceName = ""
@@ -250,6 +251,7 @@ Panel {
   property bool confirmPowerOff: false
   property var pendingStealth: undefined
   property var pendingLantern: undefined
+  property var pendingSaver: undefined
   property int pendingBrightness: -1
   property string page: "control"
   property string activeMood: ""
@@ -477,6 +479,9 @@ Panel {
   readonly property bool lanternOn: pendingLantern !== undefined
     ? pendingLantern === true
     : statusData.lantern === true
+  readonly property bool saverOn: pendingSaver !== undefined
+    ? pendingSaver === true
+    : statusData.battery_saver === true
   readonly property int brightnessLevel: {
     if (pendingBrightness >= 0) return pendingBrightness
     var b = statusData.brightness || ({})
@@ -506,6 +511,13 @@ Panel {
     var next = !lanternOn
     pendingLantern = next
     run("omapuffco lantern " + (next ? "on" : "off"))
+  }
+
+  function toggleSaver() {
+    var next = !saverOn
+    pendingSaver = next
+    if (next) pendingLantern = false
+    run("omapuffco saver " + (next ? "on" : "off"))
   }
 
   function setBrightness(value) {
@@ -815,6 +827,7 @@ Panel {
       root.pendingBoostTimes = ({})
       root.pendingStealth = undefined
       root.pendingLantern = undefined
+      root.pendingSaver = undefined
       root.pendingLanternTimeout = -1
       root.pendingBrightness = -1
       root.pendingDeviceName = ""
@@ -996,6 +1009,17 @@ Panel {
                 tint: root.urgent
                 emphasized: root.heating || root.cooling
                 onActivated: root.run("omapuffco heat stop")
+              }
+            }
+
+            Section {
+              title: "BATTERY SAVER"
+
+              SwitchRow {
+                width: parent.width
+                label: "Sleep 30 s after each session"
+                checked: root.saverOn
+                onToggled: root.toggleSaver()
               }
             }
 

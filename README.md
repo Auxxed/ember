@@ -65,7 +65,8 @@ removal.
 - **Bar** — chamber temperature and battery, with ⚡ while plugged in.
   Left-click opens the panel, right-click starts a heat cycle, middle-click
   refreshes.
-- **Control** — Heat, Boost and Stop; the four heat profiles (click one to
+- **Control** — Heat, Boost and Stop; battery saver (puts the Peak to sleep 30
+  seconds after a session ends, turning the lantern off first); the four heat profiles (click one to
   select it, click a value to type it, or nudge it with − and +); vapor level;
   and boost temperature and time.
 - **Lights** — lantern, stealth mode, auto-off, brightness, the selected
@@ -99,6 +100,7 @@ omapuffco profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
 omapuffco lantern on
 omapuffco brightness 160
 omapuffco stealth on
+omapuffco saver on                 # sleep 30 s after each session
 omapuffco stats                    # today / week / month / year / lifetime
 omapuffco sync                     # pull usage history from the Peak's log
 omapuffco waybar

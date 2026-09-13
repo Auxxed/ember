@@ -14,7 +14,9 @@ class TestConfig:
 
     def test_defaults_fill_in_missing_keys(self):
         paths.save_config({"units": "C"})
-        assert paths.load_config()["auto_connect"] is True
+        loaded = paths.load_config()
+        assert loaded["auto_connect"] is True
+        assert loaded["battery_saver"] is False
 
     def test_missing_file_yields_defaults(self):
         assert paths.load_config() == paths.DEFAULTS
