@@ -71,5 +71,11 @@ def sessions(entries: list[Entry], device_clock: int, host_now: float) -> list[d
             if estimate and actual:
                 session["preheat_estimate_s"] = estimate / 100
                 session["preheat_s"] = actual / 100
+        # They also name the heat profile (low 3 bits of byte 6; 7 means a
+        # one-off temperature) and its nominal temperature (byte 7, +150 °C).
+        if len(e.raw) >= 8 and e.raw[7]:
+            slot = e.raw[6] & 7
+            session["profile"] = -1 if slot == 7 else slot
+            session["temp_c"] = e.raw[7] + 150
         found.append(session)
     return found

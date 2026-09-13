@@ -211,8 +211,9 @@ def record_device_sessions(sessions: list[dict], *, last_index: int, serial: str
     for s in sessions:
         index = int(s["index"])
         timing = {k: float(s[k]) for k in PREHEAT_KEYS if s.get(k)}
+        timing.update({k: s[k] for k in PROFILE_KEYS if s.get(k) is not None})
         if index in by_index:
-            # A re-read fills in preheat timing on sessions stored before it was kept.
+            # A re-read fills in timing and profile on sessions stored before they were kept.
             by_index[index].update(timing)
         else:
             by_index[index] = {"index": index, "ts": float(s["ts"]), **timing}
@@ -228,6 +229,75 @@ def record_device_sessions(sessions: list[dict], *, last_index: int, serial: str
 
 
 PREHEAT_KEYS = ("preheat_s", "preheat_estimate_s")
+PROFILE_KEYS = ("profile", "temp_c")
+PROFILE_WINDOW_DAYS = 30
+
+
+def needs_profile_backfill() -> bool:
+    """Sessions stored before profiles were kept need one full re-read of the log."""
+    data = _load()
+    sessions = data.get("device_sessions") or []
+    if data.get("profile_backfilled") or not sessions:
+        return False
+    return not any("profile" in s for s in sessions)
+
+
+def mark_profile_backfilled() -> None:
+    data = _load()
+    data["profile_backfilled"] = True
+    _save(data)
+
+
+def record_battery_capacity(mah: float | None) -> dict[str, Any]:
+    """Pack capacity the Peak reports now, against the best it has reported.
+
+    Puffco publishes no design capacity, so health is relative to this Peak's
+    own best reading since OmaPuffco started watching it.
+    """
+    data = _load()
+    best = data.get("battery_best_mah")
+    since = data.get("battery_tracked_since")
+    valid = mah is not None and 100 <= float(mah) <= 20000
+    if valid:
+        changed = False
+        if not since:
+            since = data["battery_tracked_since"] = time.time()
+            changed = True
+        if not best or float(mah) > float(best):
+            best = data["battery_best_mah"] = float(mah)
+            changed = True
+        if changed:
+            _save(data)
+    return {
+        "battery_capacity_mah": round(float(mah)) if valid else None,
+        "battery_best_mah": round(float(best)) if best else None,
+        "battery_health_pct": round(min(100.0, float(mah) / float(best) * 100)) if valid and best else None,
+        "battery_tracked_since": since,
+    }
+
+
+def _profile_usage(sessions: list[dict], now: float) -> list[dict[str, Any]]:
+    cutoff = now - PROFILE_WINDOW_DAYS * 86400
+    by_profile: dict[int, list[float]] = {}
+    for s in sessions:
+        if s.get("profile") is None or float(s.get("ts", 0)) < cutoff:
+            continue
+        by_profile.setdefault(int(s["profile"]), []).append(float(s.get("temp_c") or 0))
+    total = sum(len(v) for v in by_profile.values())
+    usage = []
+    for index, temps in sorted(by_profile.items(), key=lambda item: (-len(item[1]), item[0])):
+        known = [t for t in temps if t]
+        usual = statistics.median(known) if known else None
+        usage.append(
+            {
+                "index": index,
+                "count": len(temps),
+                "share": round(len(temps) / total, 3),
+                "temp_c": None if usual is None else round(usual),
+                "temp_f": None if usual is None else round(usual * 9 / 5 + 32),
+            }
+        )
+    return usage
 
 
 def preheat_scale(samples: int = 20) -> float | None:
@@ -394,4 +464,6 @@ def get_stats(days: int = 14) -> dict[str, Any]:
         "avg_temp_f": None if avg_temp is None else round(avg_temp),
         "avg_time_s": None if avg_time is None else round(avg_time),
         "colors": colors,
+        "profiles": _profile_usage(data.get("device_sessions") or [], time.time()),
+        "profile_days": PROFILE_WINDOW_DAYS,
     }

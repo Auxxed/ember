@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
-from . import audit, faults, history
+from . import __version__, audit, faults, history
 from .ble import LoraxError, PuffcoBLE
 from .constants import PROFILE_COUNT, OperatingState
 from .paths import load_config, save_config, socket_path
@@ -23,6 +23,11 @@ from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
 
 log = logging.getLogger("omapuffco.daemon")
+
+# Notify once when the battery falls to this, and again only after it
+# recovers past the re-arm level (or the Peak is plugged in).
+LOW_BATTERY_WARN = 15
+LOW_BATTERY_REARM = 20
 
 HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
@@ -127,6 +132,7 @@ class OmaPuffcoDaemon:
         self.poll_interval = 1.5
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
+        self._low_battery_warned = False
         self._saver_sleep_task: Optional[asyncio.Task] = None
         self._clean_serial: Optional[str] = None
         self._load_clean(load_config().get("last_serial"))
@@ -168,6 +174,11 @@ class OmaPuffcoDaemon:
             "clean_remaining": DEFAULT_CLEAN_EVERY,
             "clean_due": False,
             "usage_syncing": False,
+            "charge_eta_s": None,
+            "battery_capacity_mah": None,
+            "battery_best_mah": None,
+            "battery_health_pct": None,
+            "battery_tracked_since": None,
             "birthday": None,
             "birthday_label": "",
             "dabs_remaining": 0,
@@ -219,6 +230,7 @@ class OmaPuffcoDaemon:
     def _apply_snapshot(self, snap: dict[str, Any]) -> None:
         """Merge a full device snapshot into status and refresh telemetry."""
         self._stamp_local(snap)
+        snap.update(history.record_battery_capacity(snap.get("battery_capacity_mah")))
         total = snap.get("total_dabs")
         history.record_total(total)
         if total is None:
@@ -336,6 +348,8 @@ class OmaPuffcoDaemon:
                 "device_mac": snap.get("device_mac") or mac or "",
                 "device_name": snap.get("device_name") or name or "",
                 "last_serial": serial or latest.get("last_serial") or "",
+                # Connected on purpose: come back to this Peak after a restart.
+                "auto_connect": True,
             }
         )
         self._start_poll()
@@ -352,8 +366,11 @@ class OmaPuffcoDaemon:
             state = history.device_log_state()
             start = begin + 1
             # A stored index at or past the ring's end means the log was cleared.
-            # Re-read the whole ring once when no stored session has preheat timing yet.
-            backfill = self.preheat_scale is None and not self._preheat_backfilled
+            # Re-read the whole ring once when no stored session has preheat
+            # timing or a heat profile yet.
+            backfill = (
+                self.preheat_scale is None or history.needs_profile_backfill()
+            ) and not self._preheat_backfilled
             if (
                 not backfill
                 and state.get("serial") == serial
@@ -375,6 +392,8 @@ class OmaPuffcoDaemon:
             found = audit.sessions(entries, clock, time.time())
             added = history.record_device_sessions(found, last_index=max(end - 1, start - 1), serial=serial)
             self._preheat_backfilled = True
+            if backfill:
+                history.mark_profile_backfilled()
             self.preheat_scale = history.preheat_scale()
             self.status["telemetry"] = history.get_stats()
             await self._broadcast_event("status", self.status)
@@ -388,20 +407,26 @@ class OmaPuffcoDaemon:
             serial = str(self.status.get("serial") or "")
             begin, end = await dev.get_log_bounds("flt")
             cache = self._fault_cache
-            if cache.get("serial") != serial or int(cache.get("end", 0)) > end:
-                cache = {"serial": serial, "end": begin, "entries": {}}
+            if cache.get("serial") != serial:
+                # Saved per Peak, so a daemon restart doesn't walk the ring again.
+                cache = faults.load_cache(serial) if serial else faults.empty_cache(serial)
+            if int(cache.get("end", 0)) > end:
+                # The Peak's log was cleared.
+                cache = faults.empty_cache(serial)
             start = max(begin + 1, int(cache["end"]))
             for i in range(start, end):
                 cache["entries"][i] = audit.parse_entry(i, await dev.read_log_entry(i, "flt"))
                 cache["end"] = i + 1
-            cache["entries"] = {i: e for i, e in cache["entries"].items() if i > begin}
-            cache["end"] = end
+                if serial and (i - start) % 50 == 49:
+                    faults.save_cache(cache)
+            cache["end"] = max(int(cache["end"]), end)
             self._fault_cache = cache
             clock = await dev.get_device_clock()
-            return {
-                "faults": faults.decode(list(cache["entries"].values()), clock, time.time()),
-                "read": max(0, end - start),
-            }
+            found = faults.decode(list(cache["entries"].values()), clock, time.time())
+            faults.remember_times(found, cache["placed"])
+            if serial:
+                faults.save_cache(cache)
+            return {"faults": found, "read": max(0, end - start)}
 
     def _spawn(self, coro) -> None:
         # The loop only holds weak references to tasks.
@@ -420,6 +445,10 @@ class OmaPuffcoDaemon:
     async def _disconnect(self, forget: bool = False) -> dict:
         if forget:
             self._want_connected = False
+            # Stay away after a restart too, until Connect is pressed again.
+            cfg = load_config()
+            cfg["auto_connect"] = False
+            save_config(cfg)
             # A reconnect already mid-attempt would otherwise grab the Peak back.
             if self._reconnect_task and not self._reconnect_task.done():
                 self._reconnect_task.cancel()
@@ -475,18 +504,8 @@ class OmaPuffcoDaemon:
                         self.status["telemetry"] = history.get_stats()
                         await self._count_session()
                         self._spawn(self._sync_usage_safe(delay=5.0))
-                        await self._broadcast_event(
-                            "notify",
-                            {"title": "OmaPuffco", "body": "Peak Pro is ready"},
-                        )
-                    if self.status.get("battery", 100) <= 15 and ticks % 12 == 0:
-                        await self._broadcast_event(
-                            "notify",
-                            {
-                                "title": "Peak Pro battery low",
-                                "body": f"{self.status.get('battery')}% remaining",
-                            },
-                        )
+                        await self._notify_ready()
+                    await self._check_low_battery()
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -610,19 +629,60 @@ class OmaPuffcoDaemon:
         await self._broadcast_event("status", self.status)
         return fields
 
-    async def _notify_clean(self) -> None:
-        title = "Peak Pro needs a clean"
-        body = "Swab the chamber, then mark it cleaned in the panel."
-        await self._broadcast_event("notify", {"title": title, "body": body})
+    def _desktop_notify(self, title: str, body: str, urgency: str = "normal") -> None:
+        log.info("Notification: %s — %s", title, body)
         try:
             subprocess.Popen(
-                ["notify-send", "-a", "OmaPuffco", "-u", "normal", title, body],
+                ["notify-send", "-a", "OmaPuffco", "-u", urgency, title, body],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         except OSError:
             pass
+
+    def _peak_name(self) -> str:
+        return str(self.status.get("device_name") or "Peak Pro")
+
+    async def _notify_clean(self) -> None:
+        title = f"{self._peak_name()} needs a clean"
+        body = "Swab the chamber, then mark it cleaned in the panel."
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        self._desktop_notify(title, body)
+
+    async def _notify_ready(self) -> None:
+        title = f"{self._peak_name()} is ready"
+        body = "At temperature. Your session has started."
+        temp_f = self._cycle_meta().get("temp_f")
+        if temp_f is not None:
+            cfg = load_config()
+            temp = (
+                f"{round((float(temp_f) - 32) * 5 / 9)}°C"
+                if str(cfg.get("units") or "F").upper() == "C"
+                else f"{round(float(temp_f))}°F"
+            )
+            body = f"At {temp}. Your session has started."
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        if load_config().get("notify_ready", True):
+            self._desktop_notify(title, body)
+
+    async def _check_low_battery(self) -> None:
+        try:
+            battery = int(self.status.get("battery"))
+        except (TypeError, ValueError):
+            return
+        plugged = str(self.status.get("charge_source") or "Unplugged") != "Unplugged"
+        if plugged or battery >= LOW_BATTERY_REARM:
+            self._low_battery_warned = False
+            return
+        if battery > LOW_BATTERY_WARN or self._low_battery_warned:
+            return
+        self._low_battery_warned = True
+        title = f"{self._peak_name()} battery low"
+        body = f"{battery}% left. Charge it soon: near 5% it refuses to heat."
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        if load_config().get("notify_low_battery", True):
+            self._desktop_notify(title, body)
 
     async def _count_session(self) -> None:
         """Refresh the cleaning countdown from the Peak's own lifetime counter.
@@ -681,7 +741,7 @@ class OmaPuffcoDaemon:
     async def handle(self, cmd: str, args: dict) -> Any:
         args = args or {}
         if cmd == "ping":
-            return {"version": "0.2.0", "pid": os.getpid()}
+            return {"version": __version__, "pid": os.getpid()}
         if cmd == "scan":
             timeout = float(args.get("timeout", 6))
             scanner = PuffcoBLE(
@@ -958,6 +1018,22 @@ class OmaPuffcoDaemon:
             os.umask(old_umask)
         os.chmod(self.socket_path, 0o600)
         log.info("Listening on %s", self.socket_path)
+        self._resume_last_device()
+
+    def _resume_last_device(self) -> bool:
+        """Reconnect to the last Peak after a restart or reboot, unless the
+        user disconnected it on purpose."""
+        cfg = load_config()
+        name = (cfg.get("device_name") or "").strip() or None
+        mac = (cfg.get("device_mac") or "").strip() or None
+        if not cfg.get("auto_connect", True) or not (mac or name):
+            return False
+        self._connect_name = name
+        self._connect_mac = mac
+        self._want_connected = True
+        self._schedule_reconnect()
+        log.info("Reconnecting to %s", name or mac)
+        return True
 
     async def close(self) -> None:
         self._want_connected = False

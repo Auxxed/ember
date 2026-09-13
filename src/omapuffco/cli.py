@@ -36,6 +36,34 @@ async def call(cmd: str, args: dict | None = None, timeout: float = 30.0) -> Any
         ) from exc
 
 
+LOW_HEAT_BATTERY = 10
+
+
+def low_battery_heat_warning(data: dict) -> str | None:
+    """The Peak refuses to heat near 5%; say so before it silently does."""
+    if not data.get("connected"):
+        return None
+    try:
+        battery = int(data.get("battery"))
+    except (TypeError, ValueError):
+        return None
+    plugged = (data.get("charge_source") or "Unplugged") != "Unplugged"
+    if plugged or battery > LOW_HEAT_BATTERY:
+        return None
+    return f"Battery {battery}%: the Peak may refuse to heat. Plug it in first."
+
+
+def format_eta(seconds: Any) -> str:
+    try:
+        minutes = max(1, int(round(float(seconds) / 60)))
+    except (TypeError, ValueError):
+        return ""
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, rest = divmod(minutes, 60)
+    return f"{hours} h {rest} min" if rest else f"{hours} h"
+
+
 def _profile_temp(data: dict, units: str) -> str:
     current = data.get("current_profile", 0)
     for p in data.get("profiles") or []:
@@ -67,9 +95,14 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
     charge = data.get("charge_state") or ""
     if source and source != "Unplugged" and source not in charge:
         charge = f"{charge} {source}".strip()
+    if data.get("charge_eta_s"):
+        charge = f"{charge}, full in {format_eta(data['charge_eta_s'])}"
+    health = ""
+    if data.get("battery_health_pct") is not None:
+        health = f"   health {data['battery_health_pct']}% ({data.get('battery_capacity_mah')} mAh)"
     print(
         f"  {data.get('operating_state')}   battery {data.get('battery')}%"
-        f"  {charge}{heat}"
+        f"  {charge}{heat}{health}"
     )
     timeout = data.get("lantern_timeout")
     lantern = data.get("lantern")
@@ -371,6 +404,10 @@ async def async_main(argv: list[str] | None = None) -> int:
                 when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "before last restart"
                 print(f"  {when:<20} {fault['label']}")
     elif cmd == "heat":
+        if args.action == "start":
+            warning = low_battery_heat_warning(await call("status"))
+            if warning:
+                print(warning, file=sys.stderr)
         await call(f"{args.action}_heat")
         print_status(await call("status"), raw)
     elif cmd == "lantern":

@@ -768,6 +768,25 @@ class PuffcoBLE:
         value = float(await self.read("/p/bat/soc", 0, 4, "float32"))
         return max(0, min(100, int(round(value))))
 
+    async def get_charge_eta(self) -> float | None:
+        """Seconds until full, as the Peak estimates it while charging."""
+        value = float(await self.read("/p/bat/chg/etf", 0, 4, "float32"))
+        return value if math.isfinite(value) and 0 < value < 86400 else None
+
+    async def _charge_eta(self, charge: Any) -> float | None:
+        if int(charge) not in (int(BatteryChargeState.BULK), int(BatteryChargeState.TOPUP)):
+            return None
+        try:
+            return await self.get_charge_eta()
+        except Exception:
+            log.debug("charge ETA read failed", exc_info=True)
+            return None
+
+    async def get_battery_capacity(self) -> float | None:
+        """Pack capacity in mAh as the Peak's fuel gauge has learned it."""
+        value = float(await self.read("/p/bat/cap", 0, 4, "float32"))
+        return value if math.isfinite(value) and value > 0 else None
+
     async def get_operating_state(self) -> OperatingState:
         data = await self.read_short("/p/app/stat/id", 0, 1)
         return _enum_or_raw(OperatingState, int(data[0]))
@@ -1049,11 +1068,13 @@ class PuffcoBLE:
             "firmware": await self.get_software_version(),
             "bootloader": await self.get_bootloader_version(),
             "uptime_seconds": await self.get_uptime(),
+            "battery_capacity_mah": await _optional(self.get_battery_capacity()),
             "battery": await self.get_battery_level(),
             "charge_state": CHARGE_STATE_LABELS.get(charge, f"Unknown ({int(charge)})"),
             "charge_state_id": int(charge),
             "charge_source": CHARGE_SOURCE_LABELS.get(source, "") if source is not None else "",
             "charge_source_id": int(source) if source is not None else -1,
+            "charge_eta_s": await self._charge_eta(charge),
             "chamber": CHAMBER_LABELS.get(chamber, f"Unknown ({int(chamber)})"),
             "chamber_id": int(chamber),
             "operating_state": OPERATING_STATE_LABELS.get(state, f"Unknown ({int(state)})"),
@@ -1132,6 +1153,7 @@ class PuffcoBLE:
             "charge_state_id": int(charge),
             "charge_source": CHARGE_SOURCE_LABELS.get(source, "") if source is not None else "",
             "charge_source_id": int(source) if source is not None else -1,
+            "charge_eta_s": await self._charge_eta(charge),
             "operating_state": OPERATING_STATE_LABELS.get(state, f"Unknown ({int(state)})"),
             "operating_state_id": int(state),
             "current_profile": await self.get_current_profile(),

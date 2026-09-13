@@ -159,8 +159,37 @@ Panel {
     if (isFinite(n)) bits.push(Math.round(n) + "%")
     var state = String(statusData.charge_state || "")
     if (state !== "" && state !== "Unplugged") bits.push(state)
+    var eta = formatEta(statusData.charge_eta_s)
+    if (eta !== "") bits.push("full in " + eta)
     return bits.join(" · ")
   }
+
+  function formatEta(seconds) {
+    var n = Number(seconds)
+    if (seconds === null || seconds === undefined || !isFinite(n) || n <= 0) return ""
+    var mins = Math.max(1, Math.round(n / 60))
+    if (mins < 60) return mins + " min"
+    var h = Math.floor(mins / 60)
+    var m = mins % 60
+    return h + " h" + (m ? " " + m + " min" : "")
+  }
+
+  // Health is relative to the best capacity this Peak has reported; Puffco
+  // publishes no design capacity to compare against.
+  readonly property string batteryHealthLabel: {
+    var raw = statusData.battery_health_pct
+    var pct = Number(raw)
+    if (!connected || raw === null || raw === undefined || !isFinite(pct)) return ""
+    return pct + "% of its best"
+  }
+  readonly property string batteryCapacityLabel: {
+    var raw = statusData.battery_capacity_mah
+    var mah = Number(raw)
+    if (!connected || !raw || !isFinite(mah)) return ""
+    return Math.round(mah) + " mAh"
+  }
+  // The Peak refuses to heat near 5%; warn a little before that.
+  readonly property bool lowHeatBattery: connected && !pluggedIn && Number(statusData.battery) <= 10
   readonly property string metaLabel: {
     if (!connected) return needsSetup ? "Setup needed" : (connecting ? "Connecting…" : "Disconnected")
     var s = String(statusData.operating_state || "Connected")
@@ -200,6 +229,25 @@ Panel {
   readonly property var hourSeries: telemetry.hours || []
   readonly property var weekdaySeries: telemetry.weekdays || []
   readonly property var colorSeries: telemetry.colors || []
+  readonly property var profileUsage: telemetry.profiles || []
+
+  function profileByIndex(index) {
+    for (var i = 0; i < profiles.length; i++) {
+      if (Number(profiles[i].index) === Number(index)) return profiles[i]
+    }
+    return null
+  }
+
+  function profileUsageName(index) {
+    if (Number(index) < 0) return "Custom temperature"
+    var p = profileByIndex(index)
+    return p && p.name ? String(p.name) : "Profile " + (Number(index) + 1)
+  }
+
+  function profileUsageColor(index) {
+    var p = profileByIndex(index)
+    return p && typeof p.color === "string" && p.color.charAt(0) === "#" ? p.color : Color.accent
+  }
   readonly property int chartPeak: {
     var peak = 1
     for (var i = 0; i < dailySeries.length; i++) {
@@ -269,6 +317,7 @@ Panel {
   property var faultLog: null
   property bool faultsLoading: false
   property bool faultError: false
+  property int faultShown: 8
 
   property bool connecting: false
   // Set when `omapuffco` isn't installed or its daemon isn't running, e.g. right
@@ -507,9 +556,21 @@ Panel {
     faultProc.running = true
   }
 
+  function closeFaults() {
+    faultLog = null
+    faultError = false
+    faultShown = 8
+  }
+
   function formatFaultTime(ts) {
     if (ts === null || ts === undefined) return "Before last restart"
     return Qt.formatDateTime(new Date(Number(ts) * 1000), "MMM d, h:mm AP")
+  }
+
+  function faultGlyph(code) {
+    if (code === 11) return "\uf293"                               // bluetooth
+    if (code >= 3 && code <= 8) return "\uf06d"                    // heater
+    return "\uf243"                                                // battery
   }
 
   function connectDevice() {
@@ -907,6 +968,7 @@ Panel {
         if (!text) return
         try {
           root.faultLog = JSON.parse(text).faults || []
+          root.faultShown = 8
         } catch (e) {
           root.faultError = true
         }
@@ -1087,6 +1149,18 @@ Panel {
                 emphasized: root.heating || root.cooling
                 onActivated: root.run("omapuffco heat stop")
               }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.lowHeatBattery && !root.heating
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              horizontalAlignment: Text.AlignHCenter
+              text: "Battery " + Math.round(Number(root.statusData.battery)) + "%: the Peak may refuse to heat. Plug it in first."
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
             }
 
             Item {
@@ -1851,6 +1925,73 @@ Panel {
             }
 
             Section {
+              visible: root.profileUsage.length > 0
+              title: "PROFILES"
+              trailing: "Last " + (Number(root.telemetry.profile_days) || 30) + " days"
+
+              Repeater {
+                model: root.profileUsage
+
+                Column {
+                  id: usageRow
+                  required property var modelData
+                  width: parent ? parent.width : 0
+                  spacing: Style.space(4)
+
+                  Item {
+                    width: parent.width
+                    implicitHeight: Math.max(usageName.implicitHeight, usageCount.implicitHeight)
+
+                    Text {
+                      id: usageName
+                      anchors.left: parent.left
+                      anchors.right: usageCount.left
+                      anchors.rightMargin: Style.spacing.md
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      elide: Text.ElideRight
+                      text: root.profileUsageName(usageRow.modelData.index)
+                      color: root.foreground
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                      id: usageCount
+                      anchors.right: parent.right
+                      anchors.verticalCenter: parent.verticalCenter
+                      textFormat: Text.PlainText
+                      text: {
+                        var d = usageRow.modelData
+                        var n = Number(d.count)
+                        var s = n + (n === 1 ? " session" : " sessions") + " \u00b7 " + Math.round(Number(d.share) * 100) + "%"
+                        if (d.temp_f !== null && d.temp_f !== undefined) s += " \u00b7 " + root.formatTemp(d.temp_f, d.temp_c)
+                        return s
+                      }
+                      color: root.dim
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                  }
+
+                  Rectangle {
+                    width: parent.width
+                    height: Style.space(6)
+                    radius: height / 2
+                    color: Style.normalFillFor(root.foreground, Color.accent)
+
+                    Rectangle {
+                      width: Math.max(parent.height, parent.width * Math.min(1, Number(usageRow.modelData.share) || 0))
+                      height: parent.height
+                      radius: height / 2
+                      color: root.profileUsageColor(usageRow.modelData.index)
+                    }
+                  }
+                }
+              }
+            }
+
+            Section {
               visible: root.colorSeries.length > 0
               title: "TOP COLORS"
 
@@ -1960,6 +2101,8 @@ Panel {
               InfoRow { width: parent.width; label: "Model"; value: (root.statusData.product && root.statusData.product.label) || "" }
               InfoRow { width: parent.width; label: "Chamber"; value: root.chamberLabel }
               InfoRow { width: parent.width; label: "Battery"; value: root.batteryDetail }
+              InfoRow { width: parent.width; label: "Battery capacity"; value: root.batteryCapacityLabel }
+              InfoRow { width: parent.width; label: "Battery health"; value: root.batteryHealthLabel }
               InfoRow { width: parent.width; label: "Dabs left on charge"; value: root.remainingLabel }
               InfoRow {
                 width: parent.width
@@ -1997,20 +2140,39 @@ Panel {
               }
 
               Repeater {
-                model: root.faultLog && !root.faultsLoading ? root.faultLog.slice(0, 8) : []
+                model: root.faultLog && !root.faultsLoading ? root.faultLog.slice(0, root.faultShown) : []
 
-                InfoRow {
+                FaultCard {
                   required property var modelData
                   width: parent ? parent.width : 0
-                  label: String(modelData.label)
-                  value: root.formatFaultTime(modelData.ts)
+                  fault: modelData
                 }
               }
 
               ActionButton {
                 width: parent.width
-                label: root.faultsLoading ? "Reading…" : (root.faultLog === null ? "Read fault log" : "Refresh")
-                onActivated: root.readFaults()
+                visible: !root.faultsLoading && root.faultLog !== null && root.faultLog.length > root.faultShown
+                label: "Show " + (root.faultLog ? root.faultLog.length - root.faultShown : 0) + " more"
+                onActivated: root.faultShown = root.faultLog.length
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.spacing.controlGap
+                readonly property bool opened: root.faultLog !== null && !root.faultsLoading
+
+                ActionButton {
+                  width: parent.opened ? (parent.width - parent.spacing) / 2 : parent.width
+                  label: root.faultsLoading ? "Reading…" : (root.faultLog === null ? "Read fault log" : "Refresh")
+                  onActivated: root.readFaults()
+                }
+
+                ActionButton {
+                  visible: parent.opened
+                  width: (parent.width - parent.spacing) / 2
+                  label: "Close"
+                  onActivated: root.closeFaults()
+                }
               }
             }
 
@@ -2398,6 +2560,69 @@ Panel {
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
+    }
+  }
+
+  // One fault: category glyph, what happened, and when.
+  component FaultCard: BorderSurface {
+    id: faultCard
+
+    property var fault: ({})
+
+    radius: Style.cornerRadius
+    color: Style.normalFillFor(Color.urgent, Color.urgent)
+    borderSpec: Border.controlSpec("normal", Color.urgent, Color.urgent)
+    implicitHeight: cardRow.implicitHeight + Style.spacing.controlPaddingY * 2
+
+    Item {
+      id: cardRow
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      implicitHeight: Math.max(cardGlyph.implicitHeight, cardText.implicitHeight)
+
+      Text {
+        id: cardGlyph
+        width: Style.space(20)
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        horizontalAlignment: Text.AlignHCenter
+        textFormat: Text.PlainText
+        text: root.faultGlyph(Number(faultCard.fault.code))
+        color: Color.urgent
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.iconSmall
+      }
+
+      Column {
+        id: cardText
+        anchors.left: cardGlyph.right
+        anchors.right: parent.right
+        anchors.leftMargin: Style.spacing.md
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: Style.space(2)
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: String(faultCard.fault.label || "")
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          wrapMode: Text.WordWrap
+        }
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          text: root.formatFaultTime(faultCard.fault.ts)
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
     }
   }
 

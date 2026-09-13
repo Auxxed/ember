@@ -70,15 +70,36 @@ removal.
   seconds after a session ends, turning the lantern off first); a chamber-clean
   reminder (every 10–100 dabs); the four heat profiles (click one to
   select it, click a value to type it, or nudge it with − and +); vapor level;
-  and boost temperature and time.
+  and boost temperature and time. Below 10% battery, unplugged, it warns that
+  the Peak may refuse to heat.
 - **Lights** — LED on/off, brightness, stealth mode, the selected
   profile's LED color.
 - **Usage** — today, this week, this month and lifetime counts, a daily chart,
-  streaks, your peak hour, and average session length and temperature.
-- **Device** — rename the Peak; model, chamber, battery, firmware, serial and
-  uptime; the fault log of heater, battery and pairing problems; disconnect
+  streaks, your peak hour, average session length and temperature, and which
+  heat profiles you used over the last 30 days (with each one's usual
+  temperature).
+- **Device** — rename the Peak; model, chamber, battery (with time until full
+  while charging), battery capacity and health, firmware, serial and uptime;
+  the fault log of heater, battery and pairing problems (saved per Peak, so it
+  opens instantly after the first read); disconnect
   so your phone or another computer can connect; sleep or power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
   and a short care list.
+
+### Notifications and reconnecting
+
+OmaPuffco sends a desktop notification when the Peak reaches temperature, once
+when the battery drops to 15% (again only after it recovers or charges), and
+when the chamber is due a clean. Turn the first two off with
+`"notify_ready": false` or `"notify_low_battery": false` in
+`~/.config/omapuffco/config.json`.
+
+After a restart or reboot the daemon reconnects to the last Peak on its own.
+Pressing Disconnect (or `omapuffco disconnect`) stops that until you connect
+again.
+
+Battery health compares the capacity the Peak's fuel gauge reports now with
+the best it has reported since OmaPuffco started watching it; Puffco doesn't
+publish a design capacity to compare against.
 
 ### Where the usage numbers come from
 
