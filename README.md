@@ -143,9 +143,11 @@ again.
 Battery capacity is what the Peak's fuel gauge has learned the pack holds,
 shown against the stock Peak Pro battery's rated 1700 mAh.
 
-To go easy on the Peak's battery, QuickPuff only checks it every 20 seconds
-while nothing is heating and the panel is closed; it speeds up the moment you
-open the panel or start a heat cycle.
+To go easy on the Peak's battery, QuickPuff checks it every 20 seconds while
+nothing is heating and the panel is closed, every 3 seconds with the panel open,
+and several times a second during a heat cycle. Battery health and the counters
+are re-read once a minute while the panel is open and after each session; the
+heat profiles when the panel opens.
 
 With battery saver on, QuickPuff also lets go of the Peak when it's done.
 The Peak Pro ignores a sleep command over Bluetooth, and an open

@@ -7,6 +7,8 @@ from quickpuff.constants import OperatingState
 from quickpuff.daemon import (
     FULL_SNAPSHOT_EVERY_S,
     IDLE_POLL_S,
+    WATCHED_COUNTERS_S,
+    WATCHED_POLL_S,
     IDLE_SLEEP_S,
     QuickPuffDaemon,
     idle_sleep_due,
@@ -125,9 +127,26 @@ def test_idle_sleep_is_part_of_battery_saver_only(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
-def test_idle_refresh_skips_the_costly_profile_reads():
-    assert snapshot_kind(False, False, busy=False, ticks=8, since_full=10) is None
-    assert snapshot_kind(False, False, busy=False, ticks=3, since_full=FULL_SNAPSHOT_EVERY_S) == "counters"
-    assert snapshot_kind(True, False, busy=True, ticks=3, since_full=10) == "full"  # panel just opened
-    assert snapshot_kind(True, True, busy=True, ticks=16, since_full=10) == "full"
-    assert snapshot_kind(False, False, busy=True, ticks=3, since_full=FULL_SNAPSHOT_EVERY_S) == "full"
+def test_profiles_are_reread_when_the_panel_opens_and_rarely_after():
+    long = FULL_SNAPSHOT_EVERY_S
+    assert snapshot_kind(True, False, False, since_full=10, since_counters=10) == "full"  # panel just opened
+    assert snapshot_kind(True, True, False, since_full=10, since_counters=10) is None  # still open
+    assert snapshot_kind(True, True, False, since_full=10, since_counters=WATCHED_COUNTERS_S) == "counters"
+    assert snapshot_kind(True, True, False, since_full=long, since_counters=10) == "full"
+
+
+def test_closed_panel_refreshes_counters_every_few_minutes():
+    long = FULL_SNAPSHOT_EVERY_S
+    assert snapshot_kind(False, False, False, since_full=long * 3, since_counters=long - 1) is None
+    assert snapshot_kind(False, False, False, since_full=long * 3, since_counters=long) == "counters"
+
+
+def test_a_session_gets_quick_polls_only():
+    long = FULL_SNAPSHOT_EVERY_S * 10
+    assert snapshot_kind(True, False, True, since_full=long, since_counters=long) is None
+    assert snapshot_kind(False, False, True, since_full=long, since_counters=long) is None
+
+
+def test_open_panel_polls_every_few_seconds(tmp_path):
+    assert make_daemon(tmp_path).poll_interval == WATCHED_POLL_S
+    assert poll_delay(IDLE, watching=True, watched_interval=WATCHED_POLL_S) == WATCHED_POLL_S

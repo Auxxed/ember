@@ -79,7 +79,13 @@ BATTERY_SAVER_SLEEP_S = 30.0
 # rest of the time so the Peak's radio isn't kept busy all day.
 HEATING_POLL_S = 0.7
 IDLE_POLL_S = 20.0
+# With the panel open and nothing heating: the chamber temperature moves
+# slowly, and a command still triggers a poll at once.
+WATCHED_POLL_S = 3.0
 WATCH_WINDOW_S = 10.0  # the open panel asks for status every 1.5 s
+# Everything but the heat profiles: once a minute with the panel open, every
+# five minutes otherwise, and right after a session ends.
+WATCHED_COUNTERS_S = 60.0
 FULL_SNAPSHOT_EVERY_S = 300.0
 # Battery saver also sleeps a Peak left idle this long.
 IDLE_SLEEP_S = 600.0
@@ -120,14 +126,22 @@ def poll_delay(state_id: Any, watching: bool, watched_interval: float) -> float:
     return watched_interval if watching else IDLE_POLL_S
 
 
-def snapshot_kind(watching: bool, was_watching: bool, busy: bool, ticks: int, since_full: float) -> str | None:
+def snapshot_kind(
+    watching: bool, was_watching: bool, in_cycle: bool, since_full: float, since_counters: float
+) -> str | None:
     """Which snapshot this poll takes: "full" re-reads the heat profiles (the
-    costly part, ~120 requests), "counters" refreshes everything else, None is
-    a quick poll. Profiles can only change while someone is using the Peak."""
-    if (watching and not was_watching) or (busy and ticks % 8 == 0):
+    costly part), "counters" refreshes everything else, None is a quick poll.
+
+    A session needs only the quick polls; the counters catch up once it ends.
+    Profiles only change when someone edits them, so they're re-read when the
+    panel opens and every few minutes while it stays open.
+    """
+    if in_cycle:
+        return None
+    if watching and (not was_watching or since_full >= FULL_SNAPSHOT_EVERY_S):
         return "full"
-    if since_full >= FULL_SNAPSHOT_EVERY_S:
-        return "full" if busy else "counters"
+    if since_counters >= (WATCHED_COUNTERS_S if watching else FULL_SNAPSHOT_EVERY_S):
+        return "counters"
     return None
 
 
@@ -232,7 +246,7 @@ class QuickPuffDaemon:
         self._lantern_started: Optional[float] = None
         self.brightness = {"base": 80, "mid": 80, "glass": 80, "logo": 80}
         # How often the Peak is polled while the panel is open.
-        self.poll_interval = 1.5
+        self.poll_interval = WATCHED_POLL_S
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
         self._last_watch = float("-inf")
@@ -665,24 +679,23 @@ class QuickPuffDaemon:
         self._stop_poll()
 
         async def _loop():
-            ticks = 0
-            last_full = time.monotonic()
+            last_full = last_counters = time.monotonic()
             was_watching = False
             while self.device and self.device.is_connected:
                 try:
                     await self._poll_wait(
                         poll_delay(self.status.get("operating_state_id"), self._watching(), self.poll_interval)
                     )
-                    ticks += 1
                     prev_state = self.status.get("operating_state_id")
                     watching = self._watching()
-                    busy = watching or prev_state in CYCLE_STATES
                     now = time.monotonic()
-                    # Full reads (profiles, counters) cost the most radio time:
-                    # every few polls while someone's looking, else every 5 min.
-                    kind = snapshot_kind(watching, was_watching, busy, ticks, now - last_full)
+                    kind = snapshot_kind(
+                        watching, was_watching, prev_state in CYCLE_STATES, now - last_full, now - last_counters
+                    )
                     if kind is not None:
-                        last_full = now
+                        last_counters = now
+                        if kind == "full":
+                            last_full = now
                         snap = await self.device.snapshot(include_profiles=kind == "full")
                         if kind != "full":
                             # Keep the profiles already shown; this read skipped them.
@@ -696,6 +709,9 @@ class QuickPuffDaemon:
                         self.status.update(snap)
                     await self._broadcast_event("status", self.status)
                     new_state = self.status.get("operating_state_id")
+                    if cycle_just_ended(prev_state, new_state):
+                        # The odometer and counters move as a session ends; read them next poll.
+                        last_counters = float("-inf")
                     if self.battery_saver:
                         if new_state in CYCLE_STATES:
                             self._cancel_saver_sleep()
