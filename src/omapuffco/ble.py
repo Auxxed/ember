@@ -877,14 +877,14 @@ class PuffcoBLE:
             bytes([clamp(base), clamp(mid), clamp(glass), clamp(logo)]),
         )
 
+    async def get_led_brightness(self) -> dict[str, int]:
+        raw = await self.read_short("/u/app/ui/lbrt", 0, 4)
+        if len(raw) < 4:
+            raise LoraxError(f"Brightness read returned {len(raw)} bytes")
+        return {"base": raw[0], "mid": raw[1], "glass": raw[2], "logo": raw[3]}
+
     async def show_battery_level(self) -> None:
         await self.send_mode_command(ModeCommands.SHOW_BATTERY_LEVEL)
-
-    async def show_version(self) -> None:
-        await self.send_mode_command(ModeCommands.SHOW_VERSION)
-
-    async def enter_sleep_mode(self) -> None:
-        await self.send_mode_command(ModeCommands.SLEEP)
 
     async def power_off(self) -> None:
         await self.send_mode_command(ModeCommands.MASTER_OFF)
@@ -1171,6 +1171,7 @@ class PuffcoBLE:
             "birthday": birthday,
             "birthday_label": PuffcoUtils.format_birthday(birthday),
             "lantern_timeout": await _optional(self.get_lantern_timeout()),
+            "brightness": await _optional(self.get_led_brightness()),
             "current_profile": current,
             "profiles": [],
         }

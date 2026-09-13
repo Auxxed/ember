@@ -22,7 +22,6 @@ DEFAULTS: dict[str, Any] = {
     "daily_limit": 0,
     "weekly_recap": True,
     "battery_rated_mah": 1700,
-    "poll_interval": 1.5,
     "battery_saver": False,
     "clean_every": 30,
     "clean_at_total": None,
@@ -86,6 +85,10 @@ def write_json_atomic(path: Path, data: Any, *, indent: int | None = None) -> No
         raise
 
 
+# Settings earlier versions wrote that nothing reads any more.
+RETIRED_KEYS = ("last_fact", "poll_interval")
+
+
 def load_config() -> dict[str, Any]:
     path = config_path()
     data = dict(DEFAULTS)
@@ -96,10 +99,14 @@ def load_config() -> dict[str, Any]:
                 data.update(loaded)
         except (OSError, json.JSONDecodeError):
             pass
+    for key in RETIRED_KEYS:
+        data.pop(key, None)
     return data
 
 
 def save_config(data: dict[str, Any]) -> None:
     merged = dict(DEFAULTS)
     merged.update(data)
+    for key in RETIRED_KEYS:
+        merged.pop(key, None)
     write_json_atomic(config_path(), merged, indent=2)

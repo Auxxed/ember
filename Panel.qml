@@ -2563,20 +2563,10 @@ Panel {
             Section {
               title: "SHOW ON DEVICE"
 
-              Row {
+              ActionButton {
                 width: parent.width
-                spacing: Style.spacing.controlGap
-
-                ActionButton {
-                  width: (parent.width - parent.spacing) / 2
-                  label: "Battery level"
-                  onActivated: root.run("omapuffco battery")
-                }
-                ActionButton {
-                  width: (parent.width - parent.spacing) / 2
-                  label: "Firmware version"
-                  onActivated: root.run("omapuffco version")
-                }
+                label: "Battery level"
+                onActivated: root.run("omapuffco battery")
               }
             }
 
@@ -2604,23 +2594,12 @@ Panel {
             Section {
               title: "POWER"
 
-              Row {
+              ActionButton {
                 width: parent.width
-                spacing: Style.spacing.controlGap
-
-                ActionButton {
-                  width: (parent.width - parent.spacing) / 2
-                  label: "Sleep"
-                  glyph: "\uf186"
-                  onActivated: root.run("omapuffco sleep")
-                }
-                ActionButton {
-                  width: (parent.width - parent.spacing) / 2
-                  label: "Power off"
-                  glyph: "\uf011"
-                  tint: root.urgent
-                  onActivated: root.confirmPowerOff = true
-                }
+                label: "Power off"
+                glyph: "\uf011"
+                tint: root.urgent
+                onActivated: root.confirmPowerOff = true
               }
             }
             }

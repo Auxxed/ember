@@ -105,7 +105,7 @@ removal.
   while charging), battery capacity and health, firmware, serial and uptime;
   the fault log of heater, battery and pairing problems (saved per Peak, so it
   opens instantly after the first read); disconnect
-  so your phone or another computer can connect; sleep or power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
+  so your phone or another computer can connect; power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
   and a short care list.
 
 ### Notifications and reconnecting
@@ -133,7 +133,7 @@ while nothing is heating and the panel is closed; it speeds up the moment you
 open the panel or start a heat cycle.
 
 With battery saver on, OmaPuffco also lets go of the Peak when it's done.
-Peak Pro firmware accepts the sleep command but stays awake, and an open
+The Peak Pro ignores a sleep command over Bluetooth, and an open
 Bluetooth link keeps its radio busy, so 30 seconds after a session (or after
 10 idle minutes) the daemon disconnects and the bar shows the last battery
 reading as resting. Opening the panel or running a command reconnects in a few
@@ -186,21 +186,8 @@ omapuffco stats                    # today / week / month / year / lifetime
 omapuffco sync                     # pull usage history from the Peak's log
 omapuffco faults                   # faults the Peak recorded
 omapuffco doctor                   # check Bluetooth, the daemon and your Peak
-omapuffco waybar
-omapuffco sleep
+omapuffco waybar                   # status JSON for the bar widget
 omapuffco off
-```
-
-### Waybar
-
-```jsonc
-"custom/omapuffco": {
-  "exec": "omapuffco waybar",
-  "return-type": "json",
-  "interval": 2,
-  "on-click": "omapuffco status",
-  "on-click-right": "omapuffco heat start"
-}
 ```
 
 ## Bluetooth adapter

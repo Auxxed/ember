@@ -1,4 +1,4 @@
-"""Battery saver: sleep after a heat cycle, lantern off, preference persists."""
+"""Battery saver: rest after a heat cycle, lantern off, preference persists."""
 
 from __future__ import annotations
 
@@ -26,15 +26,16 @@ SELECT = int(OperatingState.TEMP_SELECT)
 class FakePeak:
     def __init__(self) -> None:
         self.is_connected = True
-        self.slept = False
+        self.disconnected = False
         self.lantern_stopped = False
         self.state = IDLE
 
     async def get_operating_state(self) -> int:
         return self.state
 
-    async def enter_sleep_mode(self) -> None:
-        self.slept = True
+    async def disconnect(self) -> None:
+        self.disconnected = True
+        self.is_connected = False
 
     async def stop_lantern(self) -> None:
         self.lantern_stopped = True
@@ -115,7 +116,7 @@ class TestSetBatterySaver:
 
 
 class TestSaverSleep:
-    def test_sleeps_when_idle_and_turns_lantern_off(self, tmp_path, monkeypatch):
+    def test_rests_when_idle_and_turns_lantern_off(self, tmp_path, monkeypatch):
         import omapuffco.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "BATTERY_SAVER_SLEEP_S", 0)
@@ -128,7 +129,7 @@ class TestSaverSleep:
 
         asyncio.run(daemon._run_saver_sleep())
 
-        assert peak.slept is True
+        assert peak.disconnected is True
         assert peak.lantern_stopped is True
         assert daemon.lantern is False
 
@@ -146,7 +147,7 @@ class TestSaverSleep:
 
         asyncio.run(daemon._run_saver_sleep())
 
-        assert peak.slept is False
+        assert peak.disconnected is False
         assert peak.lantern_stopped is False
         assert daemon.status["operating_state_id"] == PREHEAT
 
@@ -168,7 +169,7 @@ class TestSaverSleep:
             await daemon._run_saver_sleep()
 
         asyncio.run(_run())
-        assert peak.slept is False
+        assert peak.disconnected is False
 
     def test_string_false_does_not_enable_the_saver(self, tmp_path):
         daemon = _daemon(tmp_path)
@@ -196,6 +197,6 @@ class TestSaverSleep:
             await asyncio.sleep(0)
             assert daemon._saver_sleep_task is None
             assert peak.heated is True
-            assert peak.slept is False
+            assert peak.disconnected is False
 
         asyncio.run(_start())

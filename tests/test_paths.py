@@ -30,8 +30,15 @@ class TestConfig:
         assert paths.load_config() == paths.DEFAULTS
 
     def test_unknown_keys_survive_a_round_trip(self):
-        paths.save_config({"last_fact": 7})
-        assert paths.load_config()["last_fact"] == 7
+        paths.save_config({"future_setting": 7})
+        assert paths.load_config()["future_setting"] == 7
+
+    def test_retired_settings_are_dropped(self):
+        paths.save_config({"last_fact": 8, "poll_interval": 1.5, "units": "C"})
+        cfg = paths.load_config()
+        assert "last_fact" not in cfg and "poll_interval" not in cfg
+        assert cfg["units"] == "C"
+        assert "last_fact" not in paths.config_path().read_text()
 
 
 class TestWriteJsonAtomic:

@@ -167,7 +167,7 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
     if telemetry:
         tracked = f"   ({telemetry.get('today', 0)} today, {telemetry.get('this_month', 0)} this month)"
     print(
-        f"  dabs {data.get('total_dabs')} total   ~{data.get('dabs_remaining')} left"
+        f"  dabs {data.get('total_dabs')} total   ~{data.get('dabs_remaining')} left on charge"
         f"   {data.get('dabs_per_day')}/day{clean}{tracked}"
     )
     current = data.get("current_profile", 0)
@@ -202,7 +202,7 @@ def print_stats(data: dict, as_json: bool) -> None:
         print(json.dumps(data, indent=2, default=str))
         return
     print(f"Total dabs      {data.get('total_dabs', 0)}  (lifetime, reported by device)")
-    print(f"Dabs remaining  ~{data.get('dabs_remaining', 0)} (approx. left in current chamber)")
+    print(f"Dabs remaining  ~{data.get('dabs_remaining', 0)} (approx. left on this charge)")
     print(f"Dabs / day      {data.get('dabs_per_day', 0)} (device running average)")
     print()
     print(f"Today           {data.get('today', 0)}")
@@ -309,7 +309,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     sub.add_parser("disconnect")
     sub.add_parser("status")
     sub.add_parser("refresh")
-    sub.add_parser("waybar", help="One-shot Waybar JSON")
+    sub.add_parser("waybar", help="One-shot status JSON for the bar widget")
     sub.add_parser("stats", help="Dab telemetry: today/week/month/year + lifetime")
     sub.add_parser("sync", help="Pull usage history from the Peak's own log")
     sub.add_parser("faults", help="Heater, battery and pairing faults the Peak recorded")
@@ -387,8 +387,6 @@ async def async_main(argv: list[str] | None = None) -> int:
     units.add_argument("value", choices=["F", "C", "f", "c"])
 
     sub.add_parser("battery", help="Flash battery level on the Peak")
-    sub.add_parser("version", help="Flash firmware version on the Peak")
-    sub.add_parser("sleep")
     sub.add_parser("off")
     reset = sub.add_parser("factory-reset")
     reset.add_argument("--yes", action="store_true")
@@ -618,10 +616,6 @@ async def async_main(argv: list[str] | None = None) -> int:
         print(f"Units set to °{cfg['units']}")
     elif cmd == "battery":
         await call("show_battery")
-    elif cmd == "version":
-        await call("show_version")
-    elif cmd == "sleep":
-        await call("sleep")
     elif cmd == "off":
         await call("power_off")
     elif cmd == "factory-reset":

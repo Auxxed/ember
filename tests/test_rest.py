@@ -23,16 +23,12 @@ class FakePeak:
     def __init__(self, state=IDLE):
         self.is_connected = True
         self.state = state
-        self.slept = False
         self.heated = False
         self.address = "AA:BB:CC:11:22:33"
         self.device_mac = None
 
     async def get_operating_state(self):
         return self.state
-
-    async def enter_sleep_mode(self):
-        self.slept = True
 
     async def stop_lantern(self):
         pass
@@ -83,7 +79,7 @@ def test_saver_lets_go_of_an_idle_peak_and_keeps_the_last_reading(tmp_path):
     async def run():
         d._loop = asyncio.get_running_loop()
         await d._run_saver_sleep()
-        assert peak.slept and not peak.is_connected
+        assert not peak.is_connected
         assert d.device is None
         assert d.status["resting"] is True and d.status["connected"] is False
         assert d.status["battery"] == 84
@@ -106,7 +102,7 @@ def test_saver_keeps_the_link_while_the_panel_is_open(tmp_path):
 
     asyncio.run(run())
     assert d.device is peak and peak.is_connected
-    assert not d._resting and not peak.slept
+    assert not d._resting
 
 
 def test_opening_the_panel_wakes_a_resting_peak_but_the_bar_does_not(tmp_path):
@@ -152,7 +148,7 @@ def test_settings_and_history_leave_it_resting(tmp_path):
         d._connect = reachable(d, peak, calls)
         await d.handle("set_daily_limit", {"limit": 3})
         await d.handle("sessions", {})
-        await d.handle("get_config", {})
+        await d.handle("stats", {})
 
     asyncio.run(run())
     assert calls == [] and d._resting

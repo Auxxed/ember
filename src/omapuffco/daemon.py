@@ -95,9 +95,6 @@ LOCAL_COMMANDS = frozenset(
         "connect",
         "disconnect",
         "status",
-        "set_poll_interval",
-        "get_config",
-        "set_config",
         "sessions",
         "set_note",
         "set_daily_limit",
@@ -226,7 +223,10 @@ class OmaPuffcoDaemon:
         self._connect_name: Optional[str] = None
         self._connect_mac: Optional[str] = None
         self.lantern = False
+        # The Peak can't report the lantern, so it's followed on the Peak's own timer.
+        self._lantern_started: Optional[float] = None
         self.brightness = {"base": 80, "mid": 80, "glass": 80, "logo": 80}
+        # How often the Peak is polled while the panel is open.
         self.poll_interval = 1.5
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
@@ -332,7 +332,31 @@ class OmaPuffcoDaemon:
             break
         return meta
 
+    def _set_lantern(self, on: bool) -> None:
+        self.lantern = bool(on)
+        self._lantern_started = time.monotonic() if self.lantern else None
+        self.status["lantern"] = self.lantern
+
+    def _expire_lantern(self) -> None:
+        """The Peak turns the lantern off by itself after lantern_timeout and
+        can't be asked whether it's on, so follow the same clock."""
+        if not self.lantern or self._lantern_started is None:
+            return
+        try:
+            timeout = float(self.status.get("lantern_timeout") or 0)
+        except (TypeError, ValueError):
+            return
+        if timeout > 0 and time.monotonic() - self._lantern_started >= timeout:
+            self._set_lantern(False)
+
+    def _take_brightness(self, snap: dict[str, Any]) -> None:
+        """Keep the brightness the Peak reported, so the slider starts where the Peak is."""
+        reported = snap.get("brightness")
+        if isinstance(reported, dict) and all(isinstance(reported.get(k), int) for k in self.brightness):
+            self.brightness = {k: max(0, min(255, int(reported[k]))) for k in self.brightness}
+
     def _stamp_local(self, snap: dict[str, Any]) -> dict[str, Any]:
+        self._expire_lantern()
         snap["lantern"] = self.lantern
         snap["brightness"] = dict(self.brightness)
         snap["battery_saver"] = self.battery_saver
@@ -351,6 +375,7 @@ class OmaPuffcoDaemon:
 
     def _apply_snapshot(self, snap: dict[str, Any]) -> None:
         """Merge a full device snapshot into status and refresh telemetry."""
+        self._take_brightness(snap)
         self._stamp_local(snap)
         if "battery_capacity_raw" in snap:
             self._battery_raw = snap.pop("battery_capacity_raw")
@@ -753,13 +778,11 @@ class OmaPuffcoDaemon:
                 if self.lantern:
                     try:
                         await dev.stop_lantern()
-                        self.lantern = False
-                        self.status["lantern"] = False
+                        self._set_lantern(False)
                     except Exception:
                         log.debug("battery saver: lantern off failed", exc_info=True)
-                # Some firmware sleeps on this. AW firmware ignores it, so let
-                # go of the Peak too, which is what quiets its radio.
-                await dev.enter_sleep_mode()
+                # Letting go is what quiets the Peak's radio; it ignores the
+                # sleep command.
                 await self._rest()
         except asyncio.CancelledError:
             raise
@@ -915,6 +938,9 @@ class OmaPuffcoDaemon:
             by_serial = dict(cfg.get("clean_by_serial") or {})
             by_serial[self._clean_serial] = {"at_total": self.clean_at_total, "notified": self.clean_notified}
             cfg["clean_by_serial"] = by_serial
+            # The single copy from before the countdown was per Peak is migrated by now.
+            cfg.pop("clean_at_total", None)
+            cfg.pop("clean_notified", None)
         else:
             cfg["clean_at_total"] = self.clean_at_total
             cfg["clean_notified"] = self.clean_notified
@@ -1176,8 +1202,7 @@ class OmaPuffcoDaemon:
         if self.battery_saver and self.device and self.device.is_connected and self.lantern:
             try:
                 await self.device.stop_lantern()
-                self.lantern = False
-                self.status["lantern"] = False
+                self._set_lantern(False)
             except Exception:
                 log.debug("battery saver: lantern off failed", exc_info=True)
         await self._broadcast_event("status", self.status)
@@ -1212,6 +1237,7 @@ class OmaPuffcoDaemon:
                     self._poll_wake.set()
                 if self._resting:
                     self._wake_soon()
+            self._expire_lantern()
             self.status["telemetry"] = history.get_stats()
             return self.status
         if cmd == "refresh":
@@ -1220,20 +1246,6 @@ class OmaPuffcoDaemon:
             self._apply_snapshot(snap)
             await self._broadcast_event("status", self.status)
             return self.status
-        if cmd == "set_poll_interval":
-            self.poll_interval = max(0.6, float(args.get("seconds", 1.5)))
-            return {"poll_interval": self.poll_interval}
-        if cmd == "get_config":
-            return load_config()
-        if cmd == "set_config":
-            cfg = load_config()
-            cfg.update(args)
-            save_config(cfg)
-            if "battery_saver" in args:
-                await self._set_battery_saver(_as_bool(args.get("battery_saver")))
-            if "clean_every" in args:
-                await self._set_clean_every(args.get("clean_every"))
-            return load_config()
         if cmd == "set_max_charge":
             # Puffco's Battery Preservation: stop charging at 80%, or charge to 100%.
             dev = self._require_device()
@@ -1302,14 +1314,12 @@ class OmaPuffcoDaemon:
             return {"ok": True}
         if cmd == "start_lantern":
             await dev.start_lantern()
-            self.lantern = True
-            self.status["lantern"] = True
+            self._set_lantern(True)
             await self._broadcast_event("status", self.status)
             return {"lantern": True}
         if cmd == "stop_lantern":
             await dev.stop_lantern()
-            self.lantern = False
-            self.status["lantern"] = False
+            self._set_lantern(False)
             await self._broadcast_event("status", self.status)
             return {"lantern": False}
         if cmd == "set_lantern_timeout":
@@ -1385,8 +1395,8 @@ class OmaPuffcoDaemon:
             if index is not None:
                 index = _validate_index({"index": index})
             await dev.set_profile_solid_color(index, str(args["hex"]))
-            self.lantern = True
-            self.status["lantern"] = True
+            # The colour preview lights the lantern.
+            self._set_lantern(True)
             return await self.handle("refresh", {})
         if cmd == "set_stealth":
             enable = bool(args.get("enable"))
@@ -1396,13 +1406,6 @@ class OmaPuffcoDaemon:
             return {"stealth": enable}
         if cmd == "show_battery":
             await dev.show_battery_level()
-            return {"ok": True}
-        if cmd == "show_version":
-            await dev.show_version()
-            return {"ok": True}
-        if cmd == "sleep":
-            self._cancel_saver_sleep()
-            await dev.enter_sleep_mode()
             return {"ok": True}
         if cmd == "power_off":
             self._cancel_saver_sleep()
