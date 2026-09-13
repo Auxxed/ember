@@ -399,6 +399,10 @@ class OmaPuffcoDaemon:
     async def _disconnect(self, forget: bool = False) -> dict:
         if forget:
             self._want_connected = False
+            # A reconnect already mid-attempt would otherwise grab the Peak back.
+            if self._reconnect_task and not self._reconnect_task.done():
+                self._reconnect_task.cancel()
+            self._reconnect_task = None
         self._cancel_saver_sleep()
         self._stop_poll()
         if self.device:

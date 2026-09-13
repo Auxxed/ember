@@ -519,6 +519,14 @@ Panel {
     run("omapuffco connect")
   }
 
+  // Frees the Peak's single Bluetooth link for the phone app or another
+  // computer; nothing reconnects until Connect is pressed again.
+  function disconnectDevice() {
+    connecting = false
+    connectGiveUp.stop()
+    run("omapuffco disconnect")
+  }
+
   function toggleStealth() {
     var next = !stealthOn
     pendingStealth = next
@@ -2012,6 +2020,27 @@ Panel {
                   label: "Firmware version"
                   onActivated: root.run("omapuffco version")
                 }
+              }
+            }
+
+            Section {
+              title: "CONNECTION"
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: "The Peak accepts one connection at a time. Disconnect to use it from your phone or another computer."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              ActionButton {
+                width: parent.width
+                label: "Disconnect"
+                glyph: "\uf127"
+                onActivated: root.disconnectDevice()
               }
             }
 

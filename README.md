@@ -76,8 +76,8 @@ removal.
 - **Usage** — today, this week, this month and lifetime counts, a daily chart,
   streaks, your peak hour, and average session length and temperature.
 - **Device** — rename the Peak; model, chamber, battery, firmware, serial and
-  uptime; the fault log of heater, battery and pairing problems; sleep or
-  power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
+  uptime; the fault log of heater, battery and pairing problems; disconnect
+  so your phone or another computer can connect; sleep or power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
   and a short care list.
 
 ### Where the usage numbers come from
@@ -98,6 +98,7 @@ Omarchy.
 ```bash
 omapuffco scan
 omapuffco connect                  # or: omapuffco connect --mac AA:BB:...
+omapuffco disconnect               # free the Peak for your phone or another PC
 omapuffco status
 omapuffco heat start|stop|boost
 omapuffco profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
