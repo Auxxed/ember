@@ -31,6 +31,8 @@ _PRODUCT_INFOS: tuple[ProductInfo, ...] = (
     ProductInfo("peach", 79, (13,), "Onyx"),
     ProductInfo("peach", 80, (12,), "Pearl"),
     ProductInfo("peach", 81, (23,), "Daybreak"),
+    ProductInfo("peach", 83, (25,), "Plasma"),
+    ProductInfo("peach", 84, (26,), "Glacier"),
 )
 
 _BY_PRODUCT_CODE = {p.product_code: p for p in _PRODUCT_INFOS}

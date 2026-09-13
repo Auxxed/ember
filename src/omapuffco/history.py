@@ -231,6 +231,9 @@ def record_device_sessions(sessions: list[dict], *, last_index: int, serial: str
 PREHEAT_KEYS = ("preheat_s", "preheat_estimate_s")
 PROFILE_KEYS = ("profile", "temp_c")
 PROFILE_WINDOW_DAYS = 30
+# A profile's temperature gets changed over time; its latest sessions say how
+# it runs now, where a month-long median still reports the old setting.
+RECENT_TEMP_SESSIONS = 10
 
 
 def needs_profile_backfill() -> bool:
@@ -248,45 +251,49 @@ def mark_profile_backfilled() -> None:
     _save(data)
 
 
-def record_battery_capacity(mah: float | None) -> dict[str, Any]:
-    """Pack capacity the Peak reports now, against the best it has reported.
+COULOMBS_PER_MAH = 3.6
+DEFAULT_RATED_MAH = 1700  # stock Peak Pro battery
 
-    Puffco publishes no design capacity, so health is relative to this Peak's
-    own best reading since OmaPuffco started watching it.
+
+def battery_capacity_fields(raw_capacity: Any, rated_mah: Any) -> dict[str, Any]:
+    """Pack capacity the Peak's fuel gauge has learned, against the battery's size.
+
+    /p/bat/cap is in coulombs, the unit the Puffco app converts its charge
+    counters from at 3.6 C per mAh (5216 C is 1449 mAh, not 5216 mAh). The
+    rated size is the stock 1700 mAh unless the user set their own.
     """
-    data = _load()
-    best = data.get("battery_best_mah")
-    since = data.get("battery_tracked_since")
-    valid = mah is not None and 100 <= float(mah) <= 20000
-    if valid:
-        changed = False
-        if not since:
-            since = data["battery_tracked_since"] = time.time()
-            changed = True
-        if not best or float(mah) > float(best):
-            best = data["battery_best_mah"] = float(mah)
-            changed = True
-        if changed:
-            _save(data)
+    try:
+        rated = int(rated_mah)
+    except (TypeError, ValueError):
+        rated = DEFAULT_RATED_MAH
+    if not 500 <= rated <= 10000:
+        rated = DEFAULT_RATED_MAH
+    mah = None
+    if raw_capacity is not None:
+        try:
+            value = float(raw_capacity) / COULOMBS_PER_MAH
+        except (TypeError, ValueError):
+            value = 0.0
+        if 100 <= value <= 20000:
+            mah = round(value)
     return {
-        "battery_capacity_mah": round(float(mah)) if valid else None,
-        "battery_best_mah": round(float(best)) if best else None,
-        "battery_health_pct": round(min(100.0, float(mah) / float(best) * 100)) if valid and best else None,
-        "battery_tracked_since": since,
+        "battery_capacity_mah": mah,
+        "battery_rated_mah": rated,
+        "battery_health_pct": None if mah is None else min(100, round(mah / rated * 100)),
     }
 
 
 def _profile_usage(sessions: list[dict], now: float) -> list[dict[str, Any]]:
     cutoff = now - PROFILE_WINDOW_DAYS * 86400
     by_profile: dict[int, list[float]] = {}
-    for s in sessions:
+    for s in sorted(sessions, key=lambda s: float(s.get("ts", 0))):
         if s.get("profile") is None or float(s.get("ts", 0)) < cutoff:
             continue
         by_profile.setdefault(int(s["profile"]), []).append(float(s.get("temp_c") or 0))
     total = sum(len(v) for v in by_profile.values())
     usage = []
     for index, temps in sorted(by_profile.items(), key=lambda item: (-len(item[1]), item[0])):
-        known = [t for t in temps if t]
+        known = [t for t in temps if t][-RECENT_TEMP_SESSIONS:]
         usual = statistics.median(known) if known else None
         usage.append(
             {
@@ -467,3 +474,101 @@ def get_stats(days: int = 14) -> dict[str, Any]:
         "profiles": _profile_usage(data.get("device_sessions") or [], time.time()),
         "profile_days": PROFILE_WINDOW_DAYS,
     }
+
+
+# ---- sessions and notes ------------------------------------------------------
+
+NOTE_MAX_CHARS = 500
+_NOTE_KEY = re.compile(r"^[dt]\d+$")
+
+
+def _session_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """One row per dab: sessions from the Peak's log, and before the log
+    begins, the cycles OmaPuffco saw while connected (same split as the stats).
+
+    Keys are stable so notes stick: d<log index> for logged sessions, t<unix
+    time> for locally seen ones.
+    """
+    device = data.get("device_sessions") or []
+    since = min((float(s["ts"]) for s in device), default=float("inf"))
+    rows = []
+    for e in data.get("events", []):
+        ts = float(e.get("ts", 0))
+        if ts >= since or int(e.get("delta", 0)) < 1:
+            continue
+        temp_f = e.get("temp_f")
+        rows.append(
+            {
+                "key": f"t{int(ts)}",
+                "ts": ts,
+                "profile": None,
+                "temp_f": None if temp_f is None else round(float(temp_f)),
+                "temp_c": None if temp_f is None else round((float(temp_f) - 32) * 5 / 9),
+                "preheat_s": None,
+            }
+        )
+    for s in device:
+        temp_c = s.get("temp_c")
+        rows.append(
+            {
+                "key": f"d{int(s['index'])}",
+                "ts": float(s["ts"]),
+                "profile": s.get("profile"),
+                "temp_c": temp_c,
+                "temp_f": None if temp_c is None else round(float(temp_c) * 9 / 5 + 32),
+                "preheat_s": s.get("preheat_s"),
+            }
+        )
+    return rows
+
+
+def list_sessions(limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    """Dabs newest first, each with its note."""
+    data = _load()
+    notes = data.get("notes") or {}
+    rows = sorted(_session_rows(data), key=lambda row: row["ts"], reverse=True)
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    page = rows[offset : offset + limit]
+    for row in page:
+        note = notes.get(row["key"]) or {}
+        row["note"] = note.get("text", "")
+        row["note_updated"] = note.get("updated")
+    return {"sessions": page, "total": len(rows)}
+
+
+def set_note(key: Any, text: Any) -> dict[str, Any]:
+    """Add, replace or (with empty text) remove the note on one dab."""
+    key = str(key or "").strip()
+    if not _NOTE_KEY.match(key):
+        raise ValueError(f"Not a session key: {key!r}")
+    clean = " ".join(str(text or "").split())[:NOTE_MAX_CHARS]
+    data = _load()
+    notes = data.setdefault("notes", {})
+    if clean:
+        notes[key] = {"text": clean, "updated": time.time()}
+    else:
+        notes.pop(key, None)
+    _save(data)
+    return {"key": key, "note": clean}
+
+
+def week_summary(week_start: datetime) -> dict[str, Any]:
+    """Dabs in the week starting at `week_start`, the week before, and the
+    profile used most."""
+    data = _load()
+    counted = _counted_events(data)
+    start = week_start.timestamp()
+    end = (week_start + timedelta(days=7)).timestamp()
+    before = (week_start - timedelta(days=7)).timestamp()
+
+    def total(lo: float, hi: float) -> int:
+        return sum(int(e.get("delta", 0)) for e in counted if lo <= float(e.get("ts", 0)) < hi)
+
+    profiles = [
+        int(s["profile"])
+        for s in data.get("device_sessions") or []
+        if s.get("profile") is not None and start <= float(s["ts"]) < end
+    ]
+    top = max(sorted(set(profiles)), key=profiles.count) if profiles else None
+    return {"start": start, "count": total(start, end), "previous": total(before, start), "top_profile": top}

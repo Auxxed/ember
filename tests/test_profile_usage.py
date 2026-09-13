@@ -48,3 +48,13 @@ def test_backfill_runs_only_once_even_if_the_log_has_no_profiles():
     history.record_device_sessions([{"index": 1, "ts": time.time() - 60}], last_index=1, serial="PEAK")
     history.mark_profile_backfilled()
     assert not history.needs_profile_backfill()
+
+
+def test_usual_temperature_follows_recent_sessions_after_a_change():
+    now = time.time()
+    older = [{"index": i, "ts": now - 20 * 86400 + i, "profile": 2, "temp_c": 290} for i in range(1, 30)]
+    recent = [{"index": 100 + i, "ts": now - 3600 + i, "profile": 2, "temp_c": 279} for i in range(10)]
+    history.record_device_sessions(older + recent, last_index=110, serial="PEAK")
+    usage = history.get_stats()["profiles"][0]
+    assert usage["count"] == 39
+    assert usage["temp_c"] == 279

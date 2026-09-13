@@ -17,6 +17,18 @@ class PuffcoUtils:
         return out
 
     @staticmethod
+    def revision_string_to_number(value: str) -> int:
+        """Inverse of revision_number_to_string: "A" is 1, "AF" is 27."""
+        rev_letters = "ABCDEFGHJKMNPRTUVWXYZ"
+        text = str(value).strip().upper()
+        if text == "X*":
+            return 0
+        number = 0
+        for letter in text:
+            number = number * len(rev_letters) + rev_letters.index(letter) + 1
+        return number
+
+    @staticmethod
     def c_to_f(celsius: float) -> int:
         return int(round((float(celsius) * 1.8) + 32))
 

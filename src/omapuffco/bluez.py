@@ -59,6 +59,20 @@ async def _resolve_adapter(bus) -> str:
     return adapters[0]
 
 
+async def list_adapters() -> list[dict]:
+    """Every adapter BlueZ knows, by hciN name, and whether it's powered on."""
+    bus = await _bus()
+    try:
+        objects = await _managed_objects(bus)
+    finally:
+        bus.disconnect()
+    found = []
+    for path in sorted(p for p, ifaces in objects.items() if ADAPTER_IFACE in ifaces):
+        powered = objects[path][ADAPTER_IFACE].get("Powered")
+        found.append({"name": path.rsplit("/", 1)[-1], "powered": bool(powered is not None and powered.value)})
+    return found
+
+
 async def adapter_path(bus=None) -> str:
     """Resolve the adapter object path once, then remember it.
 

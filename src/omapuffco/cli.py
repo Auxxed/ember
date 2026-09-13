@@ -36,6 +36,28 @@ async def call(cmd: str, args: dict | None = None, timeout: float = 30.0) -> Any
         ) from exc
 
 
+def print_sessions(result: dict, units: str = "F") -> None:
+    from datetime import datetime
+
+    rows = result.get("sessions") or []
+    if not rows:
+        print("No sessions yet.")
+        return
+    for row in rows:
+        bits = [datetime.fromtimestamp(row["ts"]).strftime("%b %d %H:%M"), f"{row['key']:<7}"]
+        if row.get("profile") is not None:
+            bits.append("custom" if row["profile"] < 0 else f"P{row['profile']}")
+        temp = row.get("temp_c") if units == "C" else row.get("temp_f")
+        if temp is not None:
+            bits.append(f"{temp}°{units}")
+        if row.get("preheat_s"):
+            bits.append(f"heated in {round(row['preheat_s'])}s")
+        line = "  ".join(bits)
+        if row.get("note"):
+            line += f"  — {row['note']}"
+        print(line)
+
+
 LOW_HEAT_BATTERY = 10
 
 
@@ -99,7 +121,12 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
         charge = f"{charge}, full in {format_eta(data['charge_eta_s'])}"
     health = ""
     if data.get("battery_health_pct") is not None:
-        health = f"   health {data['battery_health_pct']}% ({data.get('battery_capacity_mah')} mAh)"
+        health = (
+            f"   health {data['battery_health_pct']}%"
+            f" ({data.get('battery_capacity_mah')} of {data.get('battery_rated_mah')} mAh)"
+        )
+    if data.get("max_charge") is not None and float(data["max_charge"]) < 100:
+        health += f"   max charge {round(float(data['max_charge']))}%"
     print(
         f"  {data.get('operating_state')}   battery {data.get('battery')}%"
         f"  {charge}{heat}{health}"
@@ -120,7 +147,7 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
             pass
     print(
         f"  chamber {data.get('chamber')}   stealth {data.get('stealth')}"
-        f"   lantern {lantern}   saver {data.get('battery_saver')}"
+        f"   lantern {lantern}   saver {data.get('battery_saver')}   qtip {data.get('qtip_reminder')}"
     )
     extra = ""
     if data.get("birthday_label"):
@@ -236,6 +263,8 @@ def print_waybar(data: dict) -> None:
         if temp:
             text = f"{temp}  {battery_text}"
     tooltip = state if not connected else f"{state} · {battery_text} · {temp}".strip(" ·")
+    if connected and data.get("charge_eta_s"):
+        tooltip = f"{tooltip} · full in {format_eta(data['charge_eta_s'])}"
     if connected and data.get("clean_due"):
         tooltip = f"{tooltip} · clean chamber".strip(" ·")
         if css == "idle":
@@ -276,6 +305,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     sub.add_parser("stats", help="Dab telemetry: today/week/month/year + lifetime")
     sub.add_parser("sync", help="Pull usage history from the Peak's own log")
     sub.add_parser("faults", help="Heater, battery and pairing faults the Peak recorded")
+    sub.add_parser("doctor", help="Check Bluetooth, the daemon, the widget and your Peak, with fixes")
 
     heat = sub.add_parser("heat")
     heat.add_argument("action", choices=["start", "stop", "boost"])
@@ -316,8 +346,27 @@ async def async_main(argv: list[str] | None = None) -> int:
     stealth = sub.add_parser("stealth")
     stealth.add_argument("action", choices=["on", "off"])
 
-    saver = sub.add_parser("saver", help="Sleep the Peak 30 s after each session, turning the lantern off first")
+    saver = sub.add_parser("saver", help="Sleep the Peak 30 s after each session or after 10 min idle, turning the lantern off first")
     saver.add_argument("action", choices=["on", "off"])
+
+    preserve = sub.add_parser("preserve", help="Battery Preservation: charge to 80%% only (on) or to 100%% (off)")
+    preserve.add_argument("action", choices=["on", "off"])
+
+    sessions = sub.add_parser("sessions", help="Recent dabs with their notes")
+    sessions.add_argument("--limit", type=int, default=20)
+
+    note = sub.add_parser("note", help="Add or edit the note on a dab (no text clears it)")
+    note.add_argument("key", help="Session key from `omapuffco sessions`, like d1473")
+    note.add_argument("text", nargs="*")
+
+    limit = sub.add_parser("limit", help="Notify after N dabs in a day (0 turns it off)")
+    limit.add_argument("count", type=int)
+
+    recap = sub.add_parser("recap", help="This week so far, or turn the Sunday recap on or off")
+    recap.add_argument("action", choices=["on", "off"], nargs="?")
+
+    qtip = sub.add_parser("qtip", help="Q-tip reminder notification after each dab")
+    qtip.add_argument("action", choices=["on", "off"])
 
     clean = sub.add_parser("clean", help="Chamber-clean reminder after N dabs")
     clean.add_argument("action", choices=["done"], nargs="?", help="Reset the countdown after you clean")
@@ -343,6 +392,16 @@ async def async_main(argv: list[str] | None = None) -> int:
     if cmd is None:
         parser.print_help()
         return 0
+    if cmd == "doctor":
+        # Runs without starting the daemon: it's for when things are broken.
+        from .doctor import format_report, gather
+
+        checks = await gather()
+        if raw:
+            print(json.dumps([check.__dict__ for check in checks], indent=2))
+        else:
+            print(format_report(checks))
+        return 1 if any(check.ok is False for check in checks) else 0
     if cmd == "daemon":
         from .daemon import main as daemon_main
 
@@ -376,7 +435,8 @@ async def async_main(argv: list[str] | None = None) -> int:
     elif cmd == "disconnect":
         print_status(await call("disconnect"), raw)
     elif cmd == "status":
-        print_status(await call("status"), raw)
+        # Marks someone as watching, so the daemon polls the Peak at full speed.
+        print_status(await call("status", {"watch": True}), raw)
     elif cmd == "refresh":
         print_status(await call("refresh", timeout=20), raw)
     elif cmd == "waybar":
@@ -485,6 +545,41 @@ async def async_main(argv: list[str] | None = None) -> int:
         print_status(await call("status"), raw)
     elif cmd == "saver":
         await call("set_battery_saver", {"enable": args.action == "on"})
+        print_status(await call("status"), raw)
+    elif cmd == "preserve":
+        result = await call("set_max_charge", {"preserve": args.action == "on"})
+        limit = result.get("max_charge")
+        if raw:
+            print(json.dumps(result))
+        else:
+            print(f"Charging stops at {round(limit)}%." if limit is not None else "Couldn't read the charge limit back.")
+    elif cmd == "sessions":
+        result = await call("sessions", {"limit": args.limit})
+        if raw:
+            print(json.dumps(result, indent=2))
+        else:
+            print_sessions(result, str(load_config().get("units") or "F").upper())
+    elif cmd == "note":
+        result = await call("set_note", {"key": args.key, "text": " ".join(args.text)})
+        if raw:
+            print(json.dumps(result, indent=2))
+        else:
+            print("Note saved." if result.get("note") else "Note cleared.")
+    elif cmd == "limit":
+        result = await call("set_daily_limit", {"limit": args.count})
+        if raw:
+            print(json.dumps(result))
+        else:
+            print(f"Daily limit: {result['daily_limit']} dabs." if result["daily_limit"] else "Daily limit off.")
+    elif cmd == "recap":
+        if args.action:
+            result = await call("set_weekly_recap", {"enable": args.action == "on"})
+            print(json.dumps(result) if raw else f"Weekly recap {'on' if result['weekly_recap'] else 'off'}.")
+        else:
+            result = await call("recap")
+            print(json.dumps(result, indent=2) if raw else result["body"])
+    elif cmd == "qtip":
+        await call("set_qtip_reminder", {"enable": args.action == "on"})
         print_status(await call("status"), raw)
     elif cmd == "clean":
         if args.every is not None:

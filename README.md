@@ -12,6 +12,21 @@ break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
 ![OmaPuffco panel](preview.png)
 
+## Supported devices
+
+- **Puffco Peak Pro**, every colorway. Heat control, profiles, battery, usage,
+  the fault log and LED colours all work across Peak Pro firmware versions.
+  Firmware before AF stores LED colours in an older format; OmaPuffco writes
+  that format the way the Puffco app does, but it has only been tested on
+  newer firmware so far.
+- Firmware from before Puffco's current Bluetooth protocol can't connect.
+  Update it once in the Puffco app.
+- More than one Peak nearby (or a friend's): choose it with **Find nearby
+  Peaks** in the panel, or run `omapuffco scan` and then
+  `omapuffco connect --mac AA:BB:...`.
+- Any Bluetooth adapter BlueZ supports (see [Bluetooth adapter](#bluetooth-adapter)).
+- The Puffco Proxy and Pivot are not supported.
+
 ## Install
 
 ```bash
@@ -38,6 +53,10 @@ standard Omarchy install.
 Then wake the Peak, keep it near the computer, and disconnect the Puffco phone
 app (the Peak accepts one connection at a time). Click the OmaPuffco widget and
 choose **Connect**.
+
+If something doesn't work, run `omapuffco doctor`. It checks Bluetooth, the
+background daemon, the bar widget and your Peak, and prints the command that
+fixes anything it finds.
 
 ## Update
 
@@ -66,9 +85,7 @@ removal.
   Left-click opens the panel, right-click starts a heat cycle, middle-click
   refreshes.
 - **Control** — Heat, Boost and Stop, with a countdown ring while the Peak
-  heats up and during the session; battery saver (puts the Peak to sleep 30
-  seconds after a session ends, turning the lantern off first); a chamber-clean
-  reminder (every 10–100 dabs); the four heat profiles (click one to
+  heats up and during the session; the four heat profiles (click one to
   select it, click a value to type it, or nudge it with − and +); vapor level;
   and boost temperature and time. Below 10% battery, unplugged, it warns that
   the Peak may refuse to heat.
@@ -77,7 +94,13 @@ removal.
 - **Usage** — today, this week, this month and lifetime counts, a daily chart,
   streaks, your peak hour, average session length and temperature, and which
   heat profiles you used over the last 30 days (with each one's usual
-  temperature).
+  temperature). **History** lists every dab with its profile, temperature and
+  heat-up time; tap one to add a note, and tap again any time to edit it.
+- **Care** — Battery Preservation (charge to 80% only, the same setting as
+  the Puffco app's), battery saver (puts the Peak to sleep 30 seconds after a session
+  ends or after 10 minutes idle, turning the lantern off first), a Q-tip reminder after each dab, and a
+  chamber-clean reminder (every 10–100 dabs); under Goals, an optional daily
+  limit and a weekly recap on Sunday evenings.
 - **Device** — rename the Peak; model, chamber, battery (with time until full
   while charging), battery capacity and health, firmware, serial and uptime;
   the fault log of heater, battery and pairing problems (saved per Peak, so it
@@ -89,7 +112,12 @@ removal.
 
 OmaPuffco sends a desktop notification when the Peak reaches temperature, once
 when the battery drops to 15% (again only after it recovers or charges), and
-when the chamber is due a clean. Turn the first two off with
+when the chamber is due a clean. After each session that reached temperature
+it reminds you to Q-tip the chamber while it's still warm; switch that off under
+Care or with `omapuffco qtip off`. If you set a daily limit, it notifies once
+the day you reach it, and every Sunday evening it sends a weekly recap (how
+many sessions, your most-used profile, and how that compares with the week
+before); both live under Care → Goals. Turn the ready and low-battery alerts off with
 `"notify_ready": false` or `"notify_low_battery": false` in
 `~/.config/omapuffco/config.json`.
 
@@ -97,9 +125,12 @@ After a restart or reboot the daemon reconnects to the last Peak on its own.
 Pressing Disconnect (or `omapuffco disconnect`) stops that until you connect
 again.
 
-Battery health compares the capacity the Peak's fuel gauge reports now with
-the best it has reported since OmaPuffco started watching it; Puffco doesn't
-publish a design capacity to compare against.
+Battery capacity is what the Peak's fuel gauge has learned the pack holds,
+shown against the stock Peak Pro battery's rated 1700 mAh.
+
+To go easy on the Peak's battery, OmaPuffco only checks it every 20 seconds
+while nothing is heating and the panel is closed; it speeds up the moment you
+open the panel or start a heat cycle.
 
 ### Where the usage numbers come from
 
@@ -133,12 +164,19 @@ omapuffco lantern on
 omapuffco brightness 160
 omapuffco color '#ff6a1a' --index 0  # a profile's LED color
 omapuffco stealth on
-omapuffco saver on                 # sleep 30 s after each session
+omapuffco preserve on              # stop charging at 80% (off: charge to 100%)
+omapuffco saver on                 # sleep after sessions and 10 min idle
 omapuffco clean --every 30         # remind after N dabs (10–100)
 omapuffco clean done               # reset the cleaning countdown
+omapuffco qtip on|off              # Q-tip reminder after each dab
+omapuffco sessions --limit 20      # recent dabs with their notes
+omapuffco note d1473 "great flavor" # add or edit a dab's note (no text clears it)
+omapuffco limit 5                  # notify after 5 dabs in a day (0 = off)
+omapuffco recap                    # this week so far; `recap on|off` for Sundays
 omapuffco stats                    # today / week / month / year / lifetime
 omapuffco sync                     # pull usage history from the Peak's log
 omapuffco faults                   # faults the Peak recorded
+omapuffco doctor                   # check Bluetooth, the daemon and your Peak
 omapuffco waybar
 omapuffco sleep
 omapuffco off

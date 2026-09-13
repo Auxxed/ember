@@ -19,7 +19,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
 from .codec import decode_puffco_json, first_color, hexify
-from .lights import solid_color_payload
+from .lights import rgbt_color, rgbt_to_hex, solid_color_payload
 from .constants import (
     CHAMBER_LABELS,
     CHARGE_SOURCE_LABELS,
@@ -121,6 +121,8 @@ class PuffcoBLE:
         # Largest single Lorax message; lowered to the link's ATT MTU and the
         # Peak's reported limit once connected.
         self._max_message = 125
+        # 2 or 3, read once per connection (see get_led_api).
+        self._led_api: Optional[int] = None
         if debug:
             logging.getLogger("puffcoble").setLevel(logging.DEBUG)
 
@@ -282,6 +284,15 @@ class PuffcoBLE:
         return client
 
     async def _lorax_handshake(self, client: BleakClient) -> None:
+        try:
+            services = {service.uuid.lower() for service in client.services}
+        except Exception:
+            services = set()
+        if services and LoraxService.UUID.lower() not in services:
+            raise LoraxError(
+                "This Peak's firmware predates the Bluetooth protocol OmaPuffco uses. "
+                "Update it once in the Puffco app, then connect again."
+            )
         self.client = client
         self._notify_started = False
         self.lorax_sequence = 1
@@ -782,8 +793,16 @@ class PuffcoBLE:
             log.debug("charge ETA read failed", exc_info=True)
             return None
 
+    async def get_max_charge(self) -> float | None:
+        """Charge limit in percent (/u/bat/msoc); Puffco's Battery Preservation sets 80."""
+        value = float(await self.read("/u/bat/msoc", 0, 4, "float32"))
+        return value if math.isfinite(value) and 0 < value <= 100 else None
+
+    async def set_max_charge(self, percent: float) -> None:
+        await self.write("/u/bat/msoc", float(percent), data_type="float32")
+
     async def get_battery_capacity(self) -> float | None:
-        """Pack capacity in mAh as the Peak's fuel gauge has learned it."""
+        """Pack capacity in coulombs as the Peak's fuel gauge has learned it."""
         value = float(await self.read("/p/bat/cap", 0, 4, "float32"))
         return value if math.isfinite(value) and value > 0 else None
 
@@ -906,6 +925,59 @@ class PuffcoBLE:
         if current == index:
             await self.set_current_profile(index)
 
+    async def get_api_version(self) -> int:
+        """Firmware API revision: the low half of /p/sys/fw/api, or the OTA
+        version on firmware that predates that file (as Puffco Connect does)."""
+        try:
+            return int(await self.read("/p/sys/fw/api", 0, 4, "uint32")) & 0xFFFF
+        except LoraxError:
+            data = await self.read_short("/p/sys/fw/ver", 0, 125)
+            return int(data[0]) if data else 0
+
+    async def get_led_api(self) -> int:
+        """3 for CBOR lamp colours, 2 for the older 8-byte RGBT colours.
+
+        Same test as Puffco Connect: firmware before AF is API 2; later firmware
+        is API 2 only while it still has the separate preheat-colour file.
+        """
+        if self._led_api is None:
+            if await self.get_api_version() < PuffcoUtils.revision_string_to_number("AF"):
+                self._led_api = 2
+            else:
+                try:
+                    await self.read_short("/u/app/hc/0/phcl", 0, 8)
+                    self._led_api = 2
+                except LoraxError:
+                    self._led_api = 3
+        return self._led_api
+
+    async def _set_profile_color_rgbt(self, index: Optional[int], hex_color: str) -> None:
+        if index is None:
+            index = await self.get_current_profile()
+        color = rgbt_color(hex_color)
+        try:
+            await self.write_short("/p/app/ltrn/colr", 0, 0, color)
+            await self.start_lantern()
+        except Exception:
+            log.debug("live lantern preview failed", exc_info=True)
+        await self.write_short(f"/u/app/hc/{index}/colr", 0, 0, color)
+        # Firmware through AV also keeps separate preheat and active colours.
+        for suffix in ("phcl", "accl"):
+            try:
+                await self.write_short(f"/u/app/hc/{index}/{suffix}", 0, 0, color)
+            except LoraxError:
+                pass
+        try:
+            current = await self.get_current_profile()
+        except Exception:
+            current = None
+        if current == index:
+            for suffix in ("colr", "phcl", "accl"):
+                try:
+                    await self.write_short(f"/p/app/thc/{suffix}", 0, 0, color)
+                except LoraxError:
+                    pass
+
     async def set_lantern_colour(self, colour: dict) -> None:
         await self.write_cbor_full("/p/app/ltrn/colr", colour)
 
@@ -942,6 +1014,9 @@ class PuffcoBLE:
     async def set_profile_solid_color(self, index: Optional[int], hex_color: str) -> None:
         if not hex_color.startswith("#"):
             hex_color = f"#{hex_color}"
+        if await self.get_led_api() == 2:
+            await self._set_profile_color_rgbt(index, hex_color)
+            return
         await self.set_profile_colour(index, colour=solid_color_payload(hex_color))
 
     async def get_profile_name(self, index: Optional[int] = None) -> str:
@@ -1009,8 +1084,11 @@ class PuffcoBLE:
         time_s = await self.get_profile_time(index)
         color = None
         try:
-            decoded = await self.get_profile_colours(index)
-            color = first_color(decoded)
+            if await self.get_led_api() == 2:
+                color = rgbt_to_hex(await self.read_short(f"/u/app/hc/{index}/colr", 0, 8))
+            else:
+                decoded = await self.get_profile_colours(index)
+                color = first_color(decoded)
         except Exception:
             log.debug("Could not decode colour for profile %s", index, exc_info=True)
         vapor = None
@@ -1068,7 +1146,9 @@ class PuffcoBLE:
             "firmware": await self.get_software_version(),
             "bootloader": await self.get_bootloader_version(),
             "uptime_seconds": await self.get_uptime(),
-            "battery_capacity_mah": await _optional(self.get_battery_capacity()),
+            "battery_capacity_raw": await _optional(self.get_battery_capacity()),
+            "max_charge": await _optional(self.get_max_charge()),
+            "led_api": await _optional(self.get_led_api()),
             "battery": await self.get_battery_level(),
             "charge_state": CHARGE_STATE_LABELS.get(charge, f"Unknown ({int(charge)})"),
             "charge_state_id": int(charge),

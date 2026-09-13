@@ -11,6 +11,7 @@ import signal
 import subprocess
 import time
 import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -29,6 +30,43 @@ log = logging.getLogger("omapuffco.daemon")
 LOW_BATTERY_WARN = 15
 LOW_BATTERY_REARM = 20
 
+# The weekly recap goes out Sunday evening, or the next time the daemon runs.
+RECAP_WEEKDAY = 6
+RECAP_HOUR = 19
+DAILY_LIMIT_MAX = 50
+
+
+def clamp_daily_limit(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(DAILY_LIMIT_MAX, number))
+
+
+def recap_week_start(now: datetime) -> datetime:
+    """Monday 00:00 of the week whose recap is due at `now`."""
+    monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    if now.weekday() == RECAP_WEEKDAY and now.hour >= RECAP_HOUR:
+        return monday
+    return monday - timedelta(days=7)
+
+
+def recap_message(summary: dict[str, Any], profile_name, this_week: bool) -> tuple[str, str]:
+    count = int(summary.get("count") or 0)
+    previous = int(summary.get("previous") or 0)
+    body = f"{count} session{'s' if count != 1 else ''} {'this week' if this_week else 'last week'}"
+    if summary.get("top_profile") is not None:
+        body += f", mostly {profile_name(int(summary['top_profile']))}"
+    diff = count - previous
+    if diff > 0:
+        body += f". {diff} more than the week before."
+    elif diff < 0:
+        body += f". {-diff} fewer than the week before."
+    else:
+        body += ". Same as the week before."
+    return "Weekly recap", body
+
 HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
     int(OperatingState.HEAT_CYCLE_ACTIVE),
@@ -36,6 +74,38 @@ HEAT_STATES = {
 CYCLE_STATES = HEAT_STATES | {int(OperatingState.HEAT_CYCLE_FADE)}
 # After a cycle returns to idle, wait so a second dab isn't cut off.
 BATTERY_SAVER_SLEEP_S = 30.0
+
+# Polling: quick while heating, steady while the panel is open, and slow the
+# rest of the time so the Peak's radio isn't kept busy all day.
+HEATING_POLL_S = 0.7
+IDLE_POLL_S = 20.0
+WATCH_WINDOW_S = 10.0  # the open panel asks for status every 1.5 s
+FULL_SNAPSHOT_EVERY_S = 300.0
+# Battery saver also sleeps a Peak left idle this long.
+IDLE_SLEEP_S = 600.0
+
+
+def poll_delay(state_id: Any, watching: bool, watched_interval: float) -> float:
+    if state_id in CYCLE_STATES:
+        return HEATING_POLL_S
+    return watched_interval if watching else IDLE_POLL_S
+
+
+def snapshot_kind(watching: bool, was_watching: bool, busy: bool, ticks: int, since_full: float) -> str | None:
+    """Which snapshot this poll takes: "full" re-reads the heat profiles (the
+    costly part, ~120 requests), "counters" refreshes everything else, None is
+    a quick poll. Profiles can only change while someone is using the Peak."""
+    if (watching and not was_watching) or (busy and ticks % 8 == 0):
+        return "full"
+    if since_full >= FULL_SNAPSHOT_EVERY_S:
+        return "full" if busy else "counters"
+    return None
+
+
+def idle_sleep_due(idle_since: Optional[float], now: float, last_user_cmd: float, watching: bool) -> bool:
+    if idle_since is None or watching:
+        return False
+    return now - idle_since >= IDLE_SLEEP_S and now - last_user_cmd >= IDLE_SLEEP_S
 
 
 def _as_bool(value: Any) -> bool:
@@ -116,6 +186,7 @@ class OmaPuffcoDaemon:
         self.clients: set[asyncio.StreamWriter] = set()
         self._cmd_lock = asyncio.Lock()
         self._sync_lock = asyncio.Lock()
+        self._connect_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self._fault_lock = asyncio.Lock()
         self.preheat_scale = history.preheat_scale()
@@ -132,13 +203,25 @@ class OmaPuffcoDaemon:
         self.poll_interval = 1.5
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
+        self._last_watch = float("-inf")
+        self._poll_wake = asyncio.Event()
+        self._idle_since: Optional[float] = None
+        self._battery_raw: Any = None
         self._low_battery_warned = False
+        self.qtip_reminder = _as_bool(load_config().get("qtip_reminder", True))
+        self._session_reached_temp = False
+        self.daily_limit = clamp_daily_limit(load_config().get("daily_limit"))
+        self.weekly_recap = _as_bool(load_config().get("weekly_recap", True))
+        self._recap_task: Optional[asyncio.Task] = None
         self._saver_sleep_task: Optional[asyncio.Task] = None
         self._clean_serial: Optional[str] = None
         self._load_clean(load_config().get("last_serial"))
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.status["battery_saver"] = self.battery_saver
+        self.status["qtip_reminder"] = self.qtip_reminder
+        self.status["daily_limit"] = self.daily_limit
+        self.status["weekly_recap"] = self.weekly_recap
         self.status.update(self._clean_fields())
 
     @staticmethod
@@ -170,15 +253,18 @@ class OmaPuffcoDaemon:
             "lantern": False,
             "lantern_timeout": None,
             "battery_saver": False,
+            "qtip_reminder": True,
+            "daily_limit": 0,
+            "weekly_recap": True,
             "clean_every": DEFAULT_CLEAN_EVERY,
             "clean_remaining": DEFAULT_CLEAN_EVERY,
             "clean_due": False,
             "usage_syncing": False,
             "charge_eta_s": None,
             "battery_capacity_mah": None,
-            "battery_best_mah": None,
+            "battery_rated_mah": history.DEFAULT_RATED_MAH,
             "battery_health_pct": None,
-            "battery_tracked_since": None,
+            "max_charge": None,
             "birthday": None,
             "birthday_label": "",
             "dabs_remaining": 0,
@@ -217,6 +303,9 @@ class OmaPuffcoDaemon:
         snap["lantern"] = self.lantern
         snap["brightness"] = dict(self.brightness)
         snap["battery_saver"] = self.battery_saver
+        snap["qtip_reminder"] = self.qtip_reminder
+        snap["daily_limit"] = self.daily_limit
+        snap["weekly_recap"] = self.weekly_recap
         snap.update(self._clean_fields(snap.get("total_dabs", self.status.get("total_dabs"))))
         if (
             snap.get("operating_state_id") == int(OperatingState.HEAT_CYCLE_PREHEAT)
@@ -230,7 +319,9 @@ class OmaPuffcoDaemon:
     def _apply_snapshot(self, snap: dict[str, Any]) -> None:
         """Merge a full device snapshot into status and refresh telemetry."""
         self._stamp_local(snap)
-        snap.update(history.record_battery_capacity(snap.get("battery_capacity_mah")))
+        if "battery_capacity_raw" in snap:
+            self._battery_raw = snap.pop("battery_capacity_raw")
+            snap.update(history.battery_capacity_fields(self._battery_raw, load_config().get("battery_rated_mah")))
         total = snap.get("total_dabs")
         history.record_total(total)
         if total is None:
@@ -294,8 +385,19 @@ class OmaPuffcoDaemon:
         await self._broadcast({"event": event, "data": data})
 
     async def _connect(self, device_name: Optional[str], device_mac: Optional[str]) -> dict:
+        # One connect at a time: the reconnect after a restart and a Connect
+        # click racing each other both reached for the same Peak.
+        async with self._connect_lock:
+            return await self._connect_unlocked(device_name, device_mac)
+
+    async def _connect_unlocked(self, device_name: Optional[str], device_mac: Optional[str]) -> dict:
+        wanted = (device_mac or "").strip().lower()
         if self.device and self.device.is_connected:
-            return self.status
+            current = str(self.device.address or self.device.device_mac or "").lower()
+            if not wanted or wanted == current:
+                return self.status
+            # A different Peak was picked from Find nearby Peaks.
+            await self._disconnect(forget=False)
 
         if self.device:
             try:
@@ -398,6 +500,7 @@ class OmaPuffcoDaemon:
             self.status["telemetry"] = history.get_stats()
             await self._broadcast_event("status", self.status)
             log.info("Usage sync: read %d log entries, %d new sessions", len(entries), added)
+            await self._check_daily_limit(self.status["telemetry"].get("today"))
             return {"read": len(entries), "added": added}
 
     async def _read_faults(self) -> dict:
@@ -463,6 +566,9 @@ class OmaPuffcoDaemon:
             self.device = None
         self.status = self._empty_status()
         self.status["battery_saver"] = self.battery_saver
+        self.status["qtip_reminder"] = self.qtip_reminder
+        self.status["daily_limit"] = self.daily_limit
+        self.status["weekly_recap"] = self.weekly_recap
         self.status.update(self._clean_fields())
         await self._broadcast_event("status", self.status)
         return self.status
@@ -477,14 +583,27 @@ class OmaPuffcoDaemon:
 
         async def _loop():
             ticks = 0
+            last_full = time.monotonic()
+            was_watching = False
             while self.device and self.device.is_connected:
                 try:
-                    heating = self.status.get("operating_state_id") in HEAT_STATES
-                    await asyncio.sleep(0.7 if heating else self.poll_interval)
+                    await self._poll_wait(
+                        poll_delay(self.status.get("operating_state_id"), self._watching(), self.poll_interval)
+                    )
                     ticks += 1
                     prev_state = self.status.get("operating_state_id")
-                    if ticks % 8 == 0:
-                        snap = await self.device.snapshot(include_profiles=True)
+                    watching = self._watching()
+                    busy = watching or prev_state in CYCLE_STATES
+                    now = time.monotonic()
+                    # Full reads (profiles, counters) cost the most radio time:
+                    # every few polls while someone's looking, else every 5 min.
+                    kind = snapshot_kind(watching, was_watching, busy, ticks, now - last_full)
+                    if kind is not None:
+                        last_full = now
+                        snap = await self.device.snapshot(include_profiles=kind == "full")
+                        if kind != "full":
+                            # Keep the profiles already shown; this read skipped them.
+                            snap.pop("profiles", None)
                         self._apply_snapshot(snap)
                         # Catches an odometer bump that lands only when a cycle ends.
                         await self._refresh_clean(self.status.get("total_dabs"), notify=True)
@@ -506,6 +625,9 @@ class OmaPuffcoDaemon:
                         self._spawn(self._sync_usage_safe(delay=5.0))
                         await self._notify_ready()
                     await self._check_low_battery()
+                    await self._track_session_end(prev_state, new_state)
+                    was_watching = watching
+                    await self._maybe_idle_sleep(new_state, watching)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -520,6 +642,31 @@ class OmaPuffcoDaemon:
         if self._poll_task:
             self._poll_task.cancel()
             self._poll_task = None
+
+    def _watching(self) -> bool:
+        return time.monotonic() - self._last_watch < WATCH_WINDOW_S
+
+    async def _poll_wait(self, delay: float) -> None:
+        """Wait for the next poll, cut short when the panel opens or a command arrives."""
+        try:
+            await asyncio.wait_for(self._poll_wake.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._poll_wake.clear()
+
+    async def _maybe_idle_sleep(self, state_id: Any, watching: bool) -> None:
+        """Battery saver: sleep a Peak nobody has used for IDLE_SLEEP_S."""
+        if state_id != int(OperatingState.IDLE) or not self.battery_saver or watching:
+            self._idle_since = None
+            return
+        now = time.monotonic()
+        if self._idle_since is None:
+            self._idle_since = now
+            return
+        if idle_sleep_due(self._idle_since, now, self._last_user_cmd, watching):
+            self._idle_since = None
+            self._schedule_saver_sleep()
 
     def _cancel_saver_sleep(self) -> None:
         task = self._saver_sleep_task
@@ -666,6 +813,131 @@ class OmaPuffcoDaemon:
         if load_config().get("notify_ready", True):
             self._desktop_notify(title, body)
 
+    async def _track_session_end(self, prev_state: Any, new_state: Any) -> None:
+        """Q-tip reminder once a session that reached temperature is over.
+
+        An aborted preheat never got the chamber dirty, so it doesn't count.
+        """
+        if new_state == int(OperatingState.HEAT_CYCLE_ACTIVE):
+            self._session_reached_temp = True
+            return
+        if prev_state in CYCLE_STATES and new_state not in CYCLE_STATES:
+            reached, self._session_reached_temp = self._session_reached_temp, False
+            if reached:
+                await self._notify_qtip()
+
+    async def _notify_qtip(self) -> None:
+        title = "Q-tip time"
+        body = f"Swab the {self._peak_name()} chamber while it's still warm."
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        if self.qtip_reminder:
+            self._desktop_notify(title, body)
+
+    async def _set_qtip_reminder(self, enable: bool) -> dict[str, Any]:
+        self.qtip_reminder = bool(enable)
+        cfg = load_config()
+        cfg["qtip_reminder"] = self.qtip_reminder
+        save_config(cfg)
+        self.status["qtip_reminder"] = self.qtip_reminder
+        self.status["daily_limit"] = self.daily_limit
+        self.status["weekly_recap"] = self.weekly_recap
+        await self._broadcast_event("status", self.status)
+        return {"qtip_reminder": self.qtip_reminder}
+
+    async def _check_daily_limit(self, today: Any = None) -> bool:
+        """Notify once a day when today's dabs reach the limit the user set."""
+        if self.daily_limit <= 0:
+            return False
+        try:
+            count = int(today if today is not None else history.get_stats().get("today") or 0)
+        except (TypeError, ValueError):
+            return False
+        date = datetime.now().strftime("%Y-%m-%d")
+        cfg = load_config()
+        if count < self.daily_limit or cfg.get("daily_limit_notified") == date:
+            return False
+        cfg["daily_limit_notified"] = date
+        save_config(cfg)
+        title = f"{count} dab{'s' if count != 1 else ''} today"
+        body = (
+            f"That's your daily limit of {self.daily_limit}."
+            if count == self.daily_limit
+            else f"That's past your daily limit of {self.daily_limit}."
+        )
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        self._desktop_notify(title, body)
+        return True
+
+    async def _set_daily_limit(self, value: Any) -> dict[str, Any]:
+        self.daily_limit = clamp_daily_limit(value)
+        cfg = load_config()
+        cfg["daily_limit"] = self.daily_limit
+        save_config(cfg)
+        self.status["daily_limit"] = self.daily_limit
+        await self._broadcast_event("status", self.status)
+        return {"daily_limit": self.daily_limit}
+
+    async def _set_weekly_recap(self, enable: bool) -> dict[str, Any]:
+        self.weekly_recap = bool(enable)
+        cfg = load_config()
+        cfg["weekly_recap"] = self.weekly_recap
+        save_config(cfg)
+        self.status["weekly_recap"] = self.weekly_recap
+        await self._broadcast_event("status", self.status)
+        return {"weekly_recap": self.weekly_recap}
+
+    def _profile_name(self, index: int) -> str:
+        if index < 0:
+            return "custom temperatures"
+        for profile in self.status.get("profiles") or []:
+            try:
+                if int(profile.get("index")) == index and profile.get("name"):
+                    return str(profile["name"])
+            except (TypeError, ValueError):
+                continue
+        return f"Profile {index + 1}"
+
+    async def _maybe_send_recap(self, now: Optional[datetime] = None) -> bool:
+        if not self.weekly_recap:
+            return False
+        now = now or datetime.now()
+        start = recap_week_start(now)
+        key = start.strftime("%G-W%V")
+        cfg = load_config()
+        sent = cfg.get("weekly_recap_sent")
+        if sent == key:
+            return False
+        cfg["weekly_recap_sent"] = key
+        save_config(cfg)
+        if not sent:
+            # First run: wait for the next Sunday instead of a surprise recap now.
+            return False
+        summary = history.week_summary(start)
+        if not summary["count"] and not summary["previous"]:
+            return False
+        this_week = start.date() == (now - timedelta(days=now.weekday())).date()
+        title, body = recap_message(summary, self._profile_name, this_week)
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        self._desktop_notify(title, body)
+        return True
+
+    async def _recap_loop(self) -> None:
+        while True:
+            try:
+                await self._maybe_send_recap()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("weekly recap failed")
+            await asyncio.sleep(600)
+
+    def _recap_preview(self) -> dict[str, Any]:
+        now = datetime.now()
+        start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        summary = history.week_summary(start)
+        title, body = recap_message(summary, self._profile_name, True)
+        return {"title": title, "body": body, **summary}
+
     async def _check_low_battery(self) -> None:
         try:
             battery = int(self.status.get("battery"))
@@ -757,6 +1029,12 @@ class OmaPuffcoDaemon:
         if cmd == "disconnect":
             return await self._disconnect(forget=True)
         if cmd == "status":
+            if args.get("watch"):
+                # The panel is open: poll at full speed while it keeps asking.
+                was_watching = self._watching()
+                self._last_watch = time.monotonic()
+                if not was_watching:
+                    self._poll_wake.set()
             self.status["telemetry"] = history.get_stats()
             return self.status
         if cmd == "refresh":
@@ -779,6 +1057,25 @@ class OmaPuffcoDaemon:
             if "clean_every" in args:
                 await self._set_clean_every(args.get("clean_every"))
             return load_config()
+        if cmd == "set_max_charge":
+            # Puffco's Battery Preservation: stop charging at 80%, or charge to 100%.
+            dev = self._require_device()
+            await dev.set_max_charge(80.0 if _as_bool(args.get("preserve")) else 100.0)
+            self.status["max_charge"] = await dev.get_max_charge()
+            await self._broadcast_event("status", self.status)
+            return {"max_charge": self.status["max_charge"]}
+        if cmd == "sessions":
+            return history.list_sessions(limit=int(args.get("limit", 50)), offset=int(args.get("offset", 0)))
+        if cmd == "set_note":
+            return history.set_note(args.get("key"), args.get("text", ""))
+        if cmd == "set_daily_limit":
+            return await self._set_daily_limit(args.get("limit"))
+        if cmd == "set_weekly_recap":
+            return await self._set_weekly_recap(_as_bool(args.get("enable")))
+        if cmd == "recap":
+            return self._recap_preview()
+        if cmd == "set_qtip_reminder":
+            return await self._set_qtip_reminder(_as_bool(args.get("enable")))
         if cmd == "set_battery_saver":
             return await self._set_battery_saver(_as_bool(args.get("enable")))
         if cmd == "set_clean_every":
@@ -814,6 +1111,7 @@ class OmaPuffcoDaemon:
 
         dev = self._require_device()
         self._last_user_cmd = time.monotonic()
+        self._poll_wake.set()
 
         if cmd == "start_heat":
             self._cancel_saver_sleep()
@@ -1019,6 +1317,7 @@ class OmaPuffcoDaemon:
         os.chmod(self.socket_path, 0o600)
         log.info("Listening on %s", self.socket_path)
         self._resume_last_device()
+        self._recap_task = asyncio.create_task(self._recap_loop())
 
     def _resume_last_device(self) -> bool:
         """Reconnect to the last Peak after a restart or reboot, unless the
@@ -1037,6 +1336,8 @@ class OmaPuffcoDaemon:
 
     async def close(self) -> None:
         self._want_connected = False
+        if self._recap_task:
+            self._recap_task.cancel()
         self._stop_poll()
         if self.device:
             try:

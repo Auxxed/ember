@@ -74,12 +74,18 @@ Panel {
       pendingStealth = undefined
       pendingLantern = undefined
       pendingSaver = undefined
+      pendingQtip = undefined
       pendingCleanEvery = -1
       pendingBrightness = -1
       pendingDeviceName = ""
       confirmPowerOff = false
       page = "control"
       deviceTab = "info"
+      usageTab = "stats"
+      noteKey = ""
+      pendingDailyLimit = -1
+      pendingRecap = undefined
+      pendingPreserve = undefined
     }
   }
 
@@ -174,20 +180,36 @@ Panel {
     return h + " h" + (m ? " " + m + " min" : "")
   }
 
-  // Health is relative to the best capacity this Peak has reported; Puffco
-  // publishes no design capacity to compare against.
+  // Capacity the Peak's fuel gauge has learned, against the battery's rated size.
+  readonly property int batteryRated: Number(statusData.battery_rated_mah) || 1700
   readonly property string batteryHealthLabel: {
-    var raw = statusData.battery_health_pct
-    var pct = Number(raw)
-    if (!connected || raw === null || raw === undefined || !isFinite(pct)) return ""
-    return pct + "% of its best"
+    var raw = statusData.battery_capacity_mah
+    var mah = Number(raw)
+    if (!connected || !raw || !isFinite(mah)) return ""
+    // Use the daemon's figure so the panel and `omapuffco status` agree.
+    var daemonPct = Number(statusData.battery_health_pct)
+    if (statusData.battery_health_pct !== null && isFinite(daemonPct)) return daemonPct + "%"
+    return Math.min(100, Math.floor(mah / batteryRated * 100 + 0.5)) + "%"
   }
   readonly property string batteryCapacityLabel: {
     var raw = statusData.battery_capacity_mah
     var mah = Number(raw)
     if (!connected || !raw || !isFinite(mah)) return ""
-    return Math.round(mah) + " mAh"
+    return Math.round(mah) + " of " + batteryRated + " mAh"
   }
+
+  property var pendingPreserve: undefined
+  readonly property bool preserveSupported: statusData.max_charge !== null && statusData.max_charge !== undefined
+  readonly property bool preserveOn: pendingPreserve !== undefined
+    ? pendingPreserve === true
+    : Number(statusData.max_charge) < 100
+
+  function togglePreserve() {
+    var next = !preserveOn
+    pendingPreserve = next
+    run("omapuffco preserve " + (next ? "on" : "off"))
+  }
+
   // The Peak refuses to heat near 5%; warn a little before that.
   readonly property bool lowHeatBattery: connected && !pluggedIn && Number(statusData.battery) <= 10
   readonly property string metaLabel: {
@@ -320,6 +342,14 @@ Panel {
   property int faultShown: 8
 
   property bool connecting: false
+  property string connectError: ""
+  property bool connectFailed: false
+  property bool scanning: false
+  // null until Find nearby Peaks has run.
+  property var nearbyPeaks: null
+  readonly property string connectMessage: connectError !== ""
+    ? connectError
+    : (connectFailed ? "Couldn't connect. Wake the Peak, keep it close, and try again." : "")
   // Set when `omapuffco` isn't installed or its daemon isn't running, e.g. right
   // after `omarchy plugin add` without install.sh.
   property bool needsSetup: false
@@ -328,6 +358,7 @@ Panel {
   property var pendingStealth: undefined
   property var pendingLantern: undefined
   property var pendingSaver: undefined
+  property var pendingQtip: undefined
   property int pendingCleanEvery: -1
   property int pendingBrightness: -1
   property string page: "control"
@@ -336,16 +367,98 @@ Panel {
   readonly property bool onControl: page === "control"
   readonly property bool onLights: page === "lights"
   readonly property bool onUsage: page === "usage"
+  readonly property bool onCare: page === "care"
   readonly property bool onDevice: page === "device"
 
   readonly property var pageOptions: [
     { "value": "control", "label": "Control" },
     { "value": "lights", "label": "Lights" },
     { "value": "usage", "label": "Usage" },
+    // A dot on Care while the chamber is due a clean, so it isn't missed from Control.
+    { "value": "care", "label": cleanDue ? "Care \u2022" : "Care" },
     { "value": "device", "label": "Device" }
   ]
 
   property string deviceTab: "info"
+  property string usageTab: "stats"
+  readonly property bool onUsageStats: onUsage && usageTab === "stats"
+  readonly property bool onUsageHistory: onUsage && usageTab === "history"
+  readonly property var usageTabOptions: [
+    { "value": "stats", "label": "Stats" },
+    { "value": "history", "label": "History" }
+  ]
+
+  // History: recent dabs with notes, read on demand.
+  property var sessionList: null
+  property int sessionTotal: 0
+  property bool sessionsLoading: false
+  property int sessionLimit: 30
+  property string noteKey: ""
+  // Notes saved but not yet read back from the daemon, by session key.
+  property var pendingNotes: ({})
+  readonly property int trackedTotal: Number(telemetry.tracked_total) || 0
+  onOnUsageHistoryChanged: if (onUsageHistory) loadSessions()
+  onTrackedTotalChanged: if (onUsageHistory) loadSessions()
+
+  property int pendingDailyLimit: -1
+  readonly property int dailyLimit: pendingDailyLimit >= 0 ? pendingDailyLimit : (Number(statusData.daily_limit) || 0)
+  property var pendingRecap: undefined
+  readonly property bool recapOn: pendingRecap !== undefined ? pendingRecap === true : statusData.weekly_recap !== false
+
+  function stepDailyLimit(delta) {
+    var next = Math.max(0, Math.min(50, dailyLimit + delta))
+    pendingDailyLimit = next
+    run("omapuffco limit " + next)
+  }
+
+  function toggleRecap() {
+    var next = !recapOn
+    pendingRecap = next
+    run("omapuffco recap " + (next ? "on" : "off"))
+  }
+
+  function loadSessions() {
+    if (sessionsProc.running) return
+    sessionsLoading = true
+    sessionsProc.command = ["bash", "-lc", "omapuffco --json sessions --limit \"$1\"", "omapuffco-sessions", String(sessionLimit)]
+    sessionsProc.running = true
+  }
+
+  function editNote(key) {
+    noteKey = String(key)
+  }
+
+  function closeNote(key) {
+    if (noteKey !== key) return
+    noteKey = ""
+    Qt.callLater(function() { if (root.opened && keyCatcher) keyCatcher.forceActiveFocus() })
+  }
+
+  function noteFor(session) {
+    var key = String(session.key || "")
+    return pendingNotes[key] !== undefined ? pendingNotes[key] : String(session.note || "")
+  }
+
+  function saveNote(key, raw) {
+    var text = String(raw || "").replace(/\s+/g, " ").replace(/^\s+|\s+$/g, "")
+    var copy = Object.assign({}, pendingNotes)
+    copy[key] = text
+    pendingNotes = copy
+    closeNote(key)
+    runArgv(text === "" ? ["omapuffco", "note", key] : ["omapuffco", "note", key, text])
+    noteReload.restart()
+  }
+
+  function sessionTitle(session) {
+    var bits = []
+    if (session.profile !== null && session.profile !== undefined) bits.push(profileUsageName(session.profile))
+    if (session.temp_f !== null && session.temp_f !== undefined) bits.push(formatTemp(session.temp_f, session.temp_c))
+    return bits.length ? bits.join(" \u00b7 ") : "Dab"
+  }
+
+  function formatSessionTime(ts) {
+    return Qt.formatDateTime(new Date(Number(ts) * 1000), "ddd MMM d, h:mm AP")
+  }
   readonly property bool onDeviceInfo: onDevice && deviceTab === "info"
   readonly property bool onDeviceTips: onDevice && deviceTab === "tips"
   readonly property var deviceTabOptions: [
@@ -516,6 +629,9 @@ Panel {
   readonly property bool lanternOn: pendingLantern !== undefined
     ? pendingLantern === true
     : statusData.lantern === true
+  readonly property bool qtipOn: pendingQtip !== undefined
+    ? pendingQtip === true
+    : statusData.qtip_reminder === true
   readonly property bool saverOn: pendingSaver !== undefined
     ? pendingSaver === true
     : statusData.battery_saver === true
@@ -573,11 +689,25 @@ Panel {
     return "\uf243"                                                // battery
   }
 
-  function connectDevice() {
-    if (connecting) return
+  // `mac` picks one Peak from Find nearby Peaks; without it the daemon uses
+  // the last Peak. Runs as a process so a failure can say why.
+  function connectDevice(mac) {
+    if (connectProc.running) return
     connecting = true
+    connectError = ""
+    connectFailed = false
     connectGiveUp.restart()
-    run("omapuffco connect")
+    connectProc.command = mac
+      ? ["bash", "-lc", "omapuffco connect --mac \"$1\"", "omapuffco-connect", String(mac)]
+      : ["bash", "-lc", "omapuffco connect"]
+    connectProc.running = true
+  }
+
+  function findPeaks() {
+    if (scanProc.running) return
+    scanning = true
+    connectFailed = false
+    scanProc.running = true
   }
 
   // Frees the Peak's single Bluetooth link for the phone app or another
@@ -598,6 +728,12 @@ Panel {
     var next = !lanternOn
     pendingLantern = next
     run("omapuffco lantern " + (next ? "on" : "off"))
+  }
+
+  function toggleQtip() {
+    var next = !qtipOn
+    pendingQtip = next
+    run("omapuffco qtip " + (next ? "on" : "off"))
   }
 
   function toggleSaver() {
@@ -876,6 +1012,9 @@ Panel {
           if (root.statusData.connected === true) {
             root.connecting = false
             connectGiveUp.stop()
+            root.connectError = ""
+            root.connectFailed = false
+            root.nearbyPeaks = null
           }
         } catch (e) {
           // leave last-known state on a parse failure
@@ -915,9 +1054,83 @@ Panel {
     onTriggered: root.commitBrightness()
   }
 
+  Process {
+    id: connectProc
+    command: ["bash", "-lc", "omapuffco connect"]
+    onExited: function(exitCode) {
+      root.connecting = false
+      connectGiveUp.stop()
+      kickTimer.restart()
+      if (exitCode !== 0) root.connectFailed = true
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var lines = String(text || "").trim().split("\n")
+        var last = lines[lines.length - 1]
+        if (last === "") return
+        // Two or more Peaks in range: list them instead of guessing.
+        if (/Multiple Peak/i.test(last)) {
+          root.connectError = "More than one Peak is nearby. Pick yours below."
+          root.findPeaks()
+          return
+        }
+        root.connectError = last
+      }
+    }
+  }
+
+  Process {
+    id: sessionsProc
+    command: ["bash", "-lc", "omapuffco --json sessions --limit 30"]
+    onExited: function(exitCode) {
+      root.sessionsLoading = false
+      if (exitCode !== 0 && root.sessionList === null) root.sessionList = []
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var result = JSON.parse(text)
+          root.sessionList = result.sessions || []
+          root.sessionTotal = Number(result.total) || 0
+          root.pendingNotes = ({})
+        } catch (e) {
+          if (root.sessionList === null) root.sessionList = []
+        }
+      }
+    }
+  }
+
+  // Re-read after a note is saved, once the command has written it.
+  Timer {
+    id: noteReload
+    interval: 1500
+    onTriggered: root.loadSessions()
+  }
+
+  Process {
+    id: scanProc
+    command: ["bash", "-lc", "omapuffco --json scan --timeout 8"]
+    onExited: function(exitCode) {
+      root.scanning = false
+      if (exitCode !== 0 && root.nearbyPeaks === null) root.nearbyPeaks = []
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.nearbyPeaks = JSON.parse(text).devices || []
+        } catch (e) {
+          root.nearbyPeaks = []
+        }
+      }
+    }
+  }
+
   Timer {
     id: connectGiveUp
-    interval: 25000
+    interval: 100000
     onTriggered: root.connecting = false
   }
 
@@ -1099,6 +1312,49 @@ Panel {
 
             Text {
               width: parent.width
+              visible: root.connectMessage !== "" && !root.connecting && !root.needsSetup
+              textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              text: root.connectMessage
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            ActionButton {
+              width: parent.width
+              visible: !root.needsSetup
+              label: root.scanning ? "Searching\u2026" : "Find nearby Peaks"
+              glyph: "\uf002"
+              onActivated: root.findPeaks()
+            }
+
+            Repeater {
+              model: root.scanning || !root.nearbyPeaks ? [] : root.nearbyPeaks
+
+              ActionButton {
+                required property var modelData
+                width: parent ? parent.width : 0
+                label: String(modelData.name || "Peak Pro") + "  \u00b7  " + String(modelData.address || "")
+                onActivated: root.connectDevice(modelData.address)
+              }
+            }
+
+            Text {
+              width: parent.width
+              visible: root.nearbyPeaks !== null && !root.scanning && root.nearbyPeaks.length === 0
+              textFormat: Text.PlainText
+              horizontalAlignment: Text.AlignHCenter
+              wrapMode: Text.WordWrap
+              text: "No Peaks found. Wake the Peak, keep it close, and disconnect the phone app."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              width: parent.width
               textFormat: Text.PlainText
               horizontalAlignment: Text.AlignHCenter
               wrapMode: Text.WordWrap
@@ -1215,52 +1471,6 @@ Panel {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
-              }
-            }
-
-            Section {
-              title: "BATTERY SAVER"
-
-              SwitchRow {
-                width: parent.width
-                label: "Sleep 30 s after each session"
-                checked: root.saverOn
-                onToggled: root.toggleSaver()
-              }
-            }
-
-            Section {
-              title: "CLEANING"
-              trailing: root.cleanDue ? "Due" : root.cleanRemaining + " left"
-
-              StepperRow {
-                width: parent.width
-                label: "Remind every"
-                valueText: root.cleanEvery + " dabs"
-                canLower: root.canStepCleanEvery(-root.cleanEveryStep)
-                canRaise: root.canStepCleanEvery(root.cleanEveryStep)
-                onLower: root.stepCleanEvery(-root.cleanEveryStep)
-                onRaise: root.stepCleanEvery(root.cleanEveryStep)
-              }
-
-              Text {
-                width: parent.width
-                textFormat: Text.PlainText
-                wrapMode: Text.WordWrap
-                text: root.cleanDue
-                  ? "Swab the chamber, then mark it cleaned."
-                  : root.cleanRemaining + " dab" + (root.cleanRemaining === 1 ? "" : "s") + " until the reminder."
-                color: root.cleanDue ? root.urgent : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-
-              ActionButton {
-                width: parent.width
-                label: "Mark cleaned"
-                emphasized: root.cleanDue
-                tint: root.cleanDue ? root.urgent : root.foreground
-                onActivated: root.markCleaned()
               }
             }
 
@@ -1734,11 +1944,181 @@ Panel {
 
           }
 
+          // ================================================== Care
+          Column {
+            id: carePage
+            width: parent.width
+            visible: root.onCare && root.connected
+            spacing: Style.spacing.panelGap
+
+            Section {
+              title: "BATTERY"
+              trailing: root.batteryHealthLabel !== "" ? root.batteryHealthLabel + " health" : ""
+
+              SwitchRow {
+                width: parent.width
+                visible: root.preserveSupported
+                label: "Charge to 80% only"
+                checked: root.preserveOn
+                onToggled: root.togglePreserve()
+              }
+
+              SwitchRow {
+                width: parent.width
+                label: "Sleep after sessions and 10 min idle"
+                checked: root.saverOn
+                onToggled: root.toggleSaver()
+              }
+
+              Text {
+                width: parent.width
+                visible: root.preserveSupported && root.preserveOn
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: "Stopping at 80% helps the battery last longer."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            Section {
+              title: "CLEANING"
+              trailing: root.cleanDue ? "Due" : root.cleanRemaining + " left"
+
+              SwitchRow {
+                width: parent.width
+                label: "Q-tip reminder after each dab"
+                checked: root.qtipOn
+                onToggled: root.toggleQtip()
+              }
+
+              StepperRow {
+                width: parent.width
+                label: "Remind every"
+                valueText: root.cleanEvery + " dabs"
+                canLower: root.canStepCleanEvery(-root.cleanEveryStep)
+                canRaise: root.canStepCleanEvery(root.cleanEveryStep)
+                onLower: root.stepCleanEvery(-root.cleanEveryStep)
+                onRaise: root.stepCleanEvery(root.cleanEveryStep)
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: root.cleanDue
+                  ? "Swab the chamber, then mark it cleaned."
+                  : root.cleanRemaining + " dab" + (root.cleanRemaining === 1 ? "" : "s") + " until the reminder."
+                color: root.cleanDue ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              ActionButton {
+                width: parent.width
+                label: "Mark cleaned"
+                emphasized: root.cleanDue
+                tint: root.cleanDue ? root.urgent : root.foreground
+                onActivated: root.markCleaned()
+              }
+            }
+
+            Section {
+              title: "GOALS"
+              trailing: root.dailyLimit > 0
+                ? Number(root.telemetry.today || 0) + " of " + root.dailyLimit + " today"
+                : ""
+
+              StepperRow {
+                width: parent.width
+                label: "Daily limit"
+                valueText: root.dailyLimit > 0 ? root.dailyLimit + " dabs" : "Off"
+                canLower: root.dailyLimit > 0
+                canRaise: root.dailyLimit < 50
+                onLower: root.stepDailyLimit(-1)
+                onRaise: root.stepDailyLimit(1)
+              }
+
+              Text {
+                width: parent.width
+                visible: root.dailyLimit > 0
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: "You'll get one notification the day you reach it."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              SwitchRow {
+                width: parent.width
+                label: "Weekly recap on Sunday evening"
+                checked: root.recapOn
+                onToggled: root.toggleRecap()
+              }
+            }
+          }
+
           // ================================================== Usage
+          Segmented {
+            width: parent.width
+            visible: root.onUsage && root.connected
+            compact: true
+            options: root.usageTabOptions
+            value: root.usageTab
+            onPicked: function(value) {
+              root.usageTab = value
+              scroller.contentY = 0
+            }
+          }
+
+          Column {
+            id: historyPage
+            width: parent.width
+            visible: root.onUsageHistory && root.connected
+            spacing: Style.spacing.controlGap
+
+            Text {
+              width: parent.width
+              visible: text !== ""
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: root.sessionList === null
+                ? (root.sessionsLoading ? "Loading your dabs\u2026" : "")
+                : root.sessionList.length === 0
+                  ? "No dabs yet. Each one shows up here, ready for a note."
+                  : "Tap a dab to add or edit its note."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            Repeater {
+              model: root.sessionList || []
+
+              SessionCard {
+                required property var modelData
+                width: parent ? parent.width : 0
+                session: modelData
+              }
+            }
+
+            ActionButton {
+              width: parent.width
+              visible: root.sessionList !== null && root.sessionTotal > root.sessionList.length
+              label: root.sessionsLoading ? "Loading\u2026" : "Show more"
+              onActivated: {
+                root.sessionLimit += 30
+                root.loadSessions()
+              }
+            }
+          }
+
           Column {
             id: usagePage
             width: parent.width
-            visible: root.onUsage && root.connected
+            visible: root.onUsageStats && root.connected
             spacing: Style.spacing.panelGap
 
             Text {
@@ -2623,6 +3003,158 @@ Panel {
           font.pixelSize: Style.font.caption
         }
       }
+    }
+  }
+
+  // One dab in History: what it was, when, and its note (tap to edit).
+  component SessionCard: BorderSurface {
+    id: sessionCard
+
+    property var session: ({})
+    readonly property string key: String(session.key || "")
+    readonly property bool editingNote: root.noteKey === key
+    readonly property string note: root.noteFor(session)
+
+    radius: Style.cornerRadius
+    color: Style.normalFillFor(root.foreground, Color.accent)
+    borderSpec: Border.controlSpec(sessionMouse.containsMouse || editingNote ? "hover-cursor" : "normal", root.foreground, Color.accent)
+    implicitHeight: sessionCol.implicitHeight + Style.spacing.controlPaddingY * 2
+
+    MouseArea {
+      id: sessionMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      enabled: !sessionCard.editingNote
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.editNote(sessionCard.key)
+    }
+
+    Column {
+      id: sessionCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.leftMargin: Style.spacing.controlPaddingX
+      anchors.rightMargin: Style.spacing.controlPaddingX
+      anchors.topMargin: Style.spacing.controlPaddingY
+      spacing: Style.space(4)
+
+      Item {
+        width: parent.width
+        implicitHeight: Math.max(sessionTitle.implicitHeight, sessionTime.implicitHeight)
+
+        Text {
+          id: sessionTitle
+          anchors.left: parent.left
+          anchors.right: sessionTime.left
+          anchors.rightMargin: Style.spacing.md
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          elide: Text.ElideRight
+          text: root.sessionTitle(sessionCard.session)
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+        }
+
+        Text {
+          id: sessionTime
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: root.formatSessionTime(sessionCard.session.ts)
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      Text {
+        width: parent.width
+        visible: Number(sessionCard.session.preheat_s) > 0
+        textFormat: Text.PlainText
+        text: "Heated up in " + Math.round(Number(sessionCard.session.preheat_s)) + " s"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      Text {
+        width: parent.width
+        visible: !sessionCard.editingNote
+        textFormat: Text.PlainText
+        wrapMode: Text.WordWrap
+        text: sessionCard.note !== "" ? sessionCard.note : "Add a note"
+        color: sessionCard.note !== "" ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: sessionCard.note !== "" ? Style.font.bodySmall : Style.font.caption
+        font.italic: sessionCard.note === ""
+      }
+
+      Loader {
+        width: parent.width
+        active: sessionCard.editingNote
+
+        sourceComponent: NoteEditor {
+          noteKey: sessionCard.key
+          seed: sessionCard.note
+        }
+      }
+
+      Text {
+        width: parent.width
+        visible: sessionCard.editingNote
+        textFormat: Text.PlainText
+        text: "Enter or click away to save \u00b7 Esc to cancel"
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // Unlike TileEditor, losing focus saves: a half-written note shouldn't vanish.
+  component NoteEditor: TextField {
+    id: noteEditor
+
+    property string noteKey: ""
+    property string seed: ""
+    property bool armed: false
+    property bool done: false
+
+    function finish(save) {
+      if (done) return
+      done = true
+      if (save) root.saveNote(noteKey, text)
+      else root.closeNote(noteKey)
+    }
+
+    foreground: root.foreground
+    accent: Color.accent
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.bodySmall
+    horizontalPadding: Style.spacing.xs
+    maximumLength: 500
+    placeholderText: "How was it? Flavor, clouds, what you'd change"
+
+    Component.onCompleted: {
+      text = seed
+      Qt.callLater(function() {
+        if (noteEditor.cursorPosition !== undefined) noteEditor.cursorPosition = noteEditor.text.length
+        noteEditor.forceActiveFocus()
+        noteEditor.armed = true
+      })
+    }
+
+    onAccepted: noteEditor.finish(true)
+    Keys.onEscapePressed: function(event) {
+      noteEditor.finish(false)
+      event.accepted = true
+    }
+    onActiveFocusChanged: {
+      if (!armed || activeFocus) return
+      Qt.callLater(function() { noteEditor.finish(true) })
     }
   }
 

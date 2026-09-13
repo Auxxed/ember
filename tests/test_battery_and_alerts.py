@@ -13,18 +13,44 @@ def daemon(tmp_path):
     return d
 
 
-def test_battery_health_is_relative_to_the_best_reading():
-    first = history.record_battery_capacity(2600)
-    assert first["battery_health_pct"] == 100
-    later = history.record_battery_capacity(2340)
-    assert later["battery_best_mah"] == 2600
-    assert later["battery_health_pct"] == 90
-    assert history.record_battery_capacity(None)["battery_health_pct"] is None
+def test_capacity_is_coulombs_converted_to_mah_against_the_rated_size():
+    fields = history.battery_capacity_fields(5216.2, 1800)
+    assert fields == {"battery_capacity_mah": 1449, "battery_rated_mah": 1800, "battery_health_pct": 80}
+    assert history.battery_capacity_fields(5216.2, None)["battery_rated_mah"] == 1700
+    assert history.battery_capacity_fields(9000, 1700)["battery_health_pct"] == 100  # capped
 
 
-def test_nonsense_capacity_readings_are_ignored():
-    assert history.record_battery_capacity(3)["battery_capacity_mah"] is None
-    assert history.record_battery_capacity(3)["battery_best_mah"] is None
+def test_nonsense_capacity_and_sizes_are_ignored():
+    assert history.battery_capacity_fields(3, 1700)["battery_capacity_mah"] is None
+    assert history.battery_capacity_fields(None, 1700)["battery_health_pct"] is None
+    assert history.battery_capacity_fields(5216.2, 12)["battery_rated_mah"] == 1700
+
+
+class FakeBatteryPeak:
+    is_connected = True
+    max_charge = 100.0
+
+    async def set_max_charge(self, percent):
+        self.max_charge = percent
+
+    async def get_max_charge(self):
+        return self.max_charge
+
+
+def test_battery_preservation_sets_80_and_back_to_100(tmp_path):
+    d = daemon(tmp_path)
+    d.device = FakeBatteryPeak()
+    assert asyncio.run(d.handle("set_max_charge", {"preserve": True}))["max_charge"] == 80.0
+    assert asyncio.run(d.handle("set_max_charge", {"preserve": False}))["max_charge"] == 100.0
+
+
+def test_battery_size_cannot_be_changed_from_outside(tmp_path):
+    d = daemon(tmp_path)
+    try:
+        asyncio.run(d.handle("set_battery_rated", {"mah": 900}))
+    except Exception:
+        pass
+    assert load_config().get("battery_rated_mah") in (None, 1700)
 
 
 def test_low_battery_notifies_once_and_rearms_after_charging(tmp_path):

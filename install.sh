@@ -121,6 +121,7 @@ echo "OmaPuffco is installed."
 echo "  Wake the Peak Pro, keep it near this computer, and disconnect the phone app"
 echo "  (the Peak accepts one connection at a time). Then click the OmaPuffco widget"
 echo "  in the bar and choose Connect, or run: omapuffco connect"
+echo "  If anything doesn't work, run: omapuffco doctor"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "  Add $BIN_DIR to your PATH to use the omapuffco command in a terminal." ;;

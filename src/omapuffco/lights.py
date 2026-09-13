@@ -24,6 +24,19 @@ def normalize_color(color: str) -> str:
     return f"#{match.group(1).lower()}"
 
 
+def rgbt_color(color: str) -> bytes:
+    """LED API 2 colour (Peak Pro firmware before AF): an 8-byte RgbtColor in
+    its plain-RGB form, where byte 3 = 0 marks RGB rather than a colour table."""
+    r, g, b = bytes.fromhex(normalize_color(color)[1:])
+    return bytes([r, g, b, 0, 0, 0, 0, 0])
+
+
+def rgbt_to_hex(raw: bytes) -> str | None:
+    if len(raw) >= 4 and raw[3] == 0:
+        return f"#{raw[0]:02x}{raw[1]:02x}{raw[2]:02x}"
+    return None
+
+
 def solid_color_payload(color: str) -> dict[str, Any]:
     return {
         "lamp": {
