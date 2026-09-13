@@ -32,6 +32,19 @@ def parse_entry(index: int, raw: bytes) -> Entry:
     return Entry(index=index, ts=ts, code=code)
 
 
+def place(entry: Entry, last_boot: int | None, device_clock: int, host_now: float) -> float | None:
+    """Host time for a log entry, or None when its boot can't be placed."""
+    if entry.ts >= ABSOLUTE_EPOCH:
+        return float(entry.ts)
+    if (
+        device_clock < ABSOLUTE_EPOCH
+        and (last_boot is None or entry.index > last_boot)
+        and entry.ts <= device_clock
+    ):
+        return host_now - (device_clock - entry.ts)
+    return None
+
+
 def sessions(entries: list[Entry], device_clock: int, host_now: float) -> list[dict]:
     """Heat cycles that reached temperature, stamped in host time.
 
@@ -46,15 +59,8 @@ def sessions(entries: list[Entry], device_clock: int, host_now: float) -> list[d
     for e in ordered:
         if e.code != REACHED_TEMP:
             continue
-        if e.ts >= ABSOLUTE_EPOCH:
-            ts = float(e.ts)
-        elif (
-            device_clock < ABSOLUTE_EPOCH
-            and (last_boot is None or e.index > last_boot)
-            and e.ts <= device_clock
-        ):
-            ts = host_now - (device_clock - e.ts)
-        else:
+        ts = place(e, last_boot, device_clock, host_now)
+        if ts is None:
             continue
         found.append({"index": e.index, "ts": ts})
     return found

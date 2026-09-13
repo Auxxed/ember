@@ -65,16 +65,18 @@ removal.
 - **Bar** — chamber temperature and battery, with ⚡ while plugged in.
   Left-click opens the panel, right-click starts a heat cycle, middle-click
   refreshes.
-- **Control** — Heat, Boost and Stop; battery saver (puts the Peak to sleep 30
+- **Control** — Heat, Boost and Stop, with a countdown ring while the Peak
+  heats up and during the session; battery saver (puts the Peak to sleep 30
   seconds after a session ends, turning the lantern off first); the four heat profiles (click one to
   select it, click a value to type it, or nudge it with − and +); vapor level;
   and boost temperature and time.
-- **Lights** — lantern, stealth mode, auto-off, brightness, the selected
+- **Lights** — LED on/off, brightness, stealth mode, the selected
   profile's color and animation, and the Connect app's mood presets.
 - **Usage** — today, this week, this month and lifetime counts, a daily chart,
   streaks, your peak hour, and average session length and temperature.
 - **Device** — rename the Peak; model, chamber, battery, firmware, serial and
-  uptime; sleep or power off.
+  uptime; the fault log of heater, battery and pairing problems; sleep or
+  power off.
 
 ### Where the usage numbers come from
 
@@ -103,6 +105,7 @@ omapuffco stealth on
 omapuffco saver on                 # sleep 30 s after each session
 omapuffco stats                    # today / week / month / year / lifetime
 omapuffco sync                     # pull usage history from the Peak's log
+omapuffco faults                   # faults the Peak recorded
 omapuffco waybar
 omapuffco sleep
 omapuffco off

@@ -13,11 +13,11 @@ import traceback
 from pathlib import Path
 from typing import Any, Optional
 
-from . import audit, history
+from . import audit, faults, history
 from .ble import LoraxError, PuffcoBLE
 from .constants import PROFILE_COUNT, OperatingState
 from .paths import load_config, log_path, save_config, socket_path
-from .moods import resolve_mood, resolve_style
+from .moods import mood_payload, resolve_mood, resolve_style
 from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
@@ -83,6 +83,8 @@ class OmaPuffcoDaemon:
         self._cmd_lock = asyncio.Lock()
         self._sync_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
+        self._fault_lock = asyncio.Lock()
+        self._fault_cache: dict[str, Any] = {}
         self._poll_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._auto_reconnect = True
@@ -122,6 +124,8 @@ class OmaPuffcoDaemon:
             "operating_state_id": -1,
             "heater_temp_c": None,
             "heater_temp_f": None,
+            "state_elapsed_s": None,
+            "state_total_s": None,
             "stealth": False,
             "lantern": False,
             "lantern_timeout": None,
@@ -285,14 +289,14 @@ class OmaPuffcoDaemon:
         async with self._sync_lock:
             dev = self._require_device()
             serial = str(self.status.get("serial") or "")
-            begin, end = await dev.get_audit_bounds()
+            begin, end = await dev.get_log_bounds()
             state = history.device_log_state()
             start = begin + 1
             # A stored index at or past the ring's end means the log was cleared.
             if state.get("serial") == serial and state.get("index") is not None and int(state["index"]) < end:
                 start = max(start, int(state["index"]) + 1)
             entries = [
-                audit.parse_entry(i, await dev.read_audit_entry(i)) for i in range(start, end)
+                audit.parse_entry(i, await dev.read_log_entry(i)) for i in range(start, end)
             ]
             clock = await dev.get_device_clock()
             found = audit.sessions(entries, clock, time.time())
@@ -301,6 +305,28 @@ class OmaPuffcoDaemon:
             await self._broadcast_event("status", self.status)
             log.info("Usage sync: read %d log entries, %d new sessions", len(entries), added)
             return {"read": len(entries), "added": added}
+
+    async def _read_faults(self) -> dict:
+        """The Peak's fault log, read incrementally and cached for this session."""
+        async with self._fault_lock:
+            dev = self._require_device()
+            serial = str(self.status.get("serial") or "")
+            begin, end = await dev.get_log_bounds("flt")
+            cache = self._fault_cache
+            if cache.get("serial") != serial or int(cache.get("end", 0)) > end:
+                cache = {"serial": serial, "end": begin, "entries": {}}
+            start = max(begin + 1, int(cache["end"]))
+            for i in range(start, end):
+                cache["entries"][i] = audit.parse_entry(i, await dev.read_log_entry(i, "flt"))
+                cache["end"] = i + 1
+            cache["entries"] = {i: e for i, e in cache["entries"].items() if i > begin}
+            cache["end"] = end
+            self._fault_cache = cache
+            clock = await dev.get_device_clock()
+            return {
+                "faults": faults.decode(list(cache["entries"].values()), clock, time.time()),
+                "read": max(0, end - start),
+            }
 
     def _spawn(self, coro) -> None:
         # The loop only holds weak references to tasks.
@@ -632,16 +658,12 @@ class OmaPuffcoDaemon:
             if index is not None:
                 index = _validate_index({"index": index})
             style = resolve_style(str(args.get("anim", "solid")))
-            if style["anim"] is None:
+            if style["kind"] is None:
                 await dev.set_profile_solid_color(index, colors[0])
             else:
-                await dev.set_profile_animation(
+                await dev.set_profile_mood(
                     index,
-                    style["anim"],
-                    list(colors),
-                    speed=int(args.get("speed", style["speed"])),
-                    bright=int(args.get("bright", 255)),
-                    offsets=style["offsets"],
+                    mood_payload(style["kind"], list(colors), tempo=float(args.get("tempo", 0.5))),
                 )
             self.lantern = True
             self.status["lantern"] = True
@@ -651,16 +673,10 @@ class OmaPuffcoDaemon:
             index = args.get("index")
             if index is not None:
                 index = _validate_index({"index": index})
-            if mood["anim"] is None:
+            if mood["kind"] is None:
                 await dev.set_profile_solid_color(index, mood["colors"][0])
             else:
-                await dev.set_profile_animation(
-                    index,
-                    mood["anim"],
-                    mood["colors"],
-                    speed=mood["speed"],
-                    offsets=mood["offsets"],
-                )
+                await dev.set_profile_mood(index, mood_payload(mood["kind"], mood["colors"]))
             if args.get("lantern", True):
                 await dev.start_lantern()
                 self.lantern = True
@@ -716,6 +732,8 @@ class OmaPuffcoDaemon:
                     # for it would leave Heat/Stop unresponsive meanwhile.
                     if cmd == "sync_usage":
                         result = await self._sync_usage()
+                    elif cmd == "faults":
+                        result = await self._read_faults()
                     else:
                         async with self._cmd_lock:
                             result = await self.handle(str(cmd), args)
@@ -732,6 +750,9 @@ class OmaPuffcoDaemon:
                             "trace": traceback.format_exc() if self.debug else None,
                         },
                     )
+        except (ConnectionError, asyncio.IncompleteReadError):
+            # The client went away mid-reply, e.g. a stalled `omapuffco waybar` that got killed.
+            pass
         finally:
             self.clients.discard(writer)
             try:

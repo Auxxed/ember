@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import struct
 from base64 import b64decode
@@ -24,7 +25,6 @@ from .constants import (
     CHARGE_STATE_LABELS,
     OPERATING_STATE_LABELS,
     PROFILE_COUNT,
-    AnimationCode,
     BatteryChargeSource,
     BatteryChargeState,
     ChamberType,
@@ -34,7 +34,6 @@ from .constants import (
     OperatingState,
     UnlockKeys,
 )
-from .moods import pikaled2_payload
 from .product_info import get_product_info, is_proxy
 from .utils import PuffcoUtils
 from .vapor import name_for as vapor_name_for
@@ -73,6 +72,11 @@ DataType = Literal[
 PEAK_PRO_NAME_HINTS = ("puffco", "peak")
 EXCLUDE_NAME_HINTS = ("proxy", "pivot")
 HEATER_TEMP_PATHS = ("/p/app/htr/temp", "/p/htr/temp")
+HEAT_CYCLE_STATES = {
+    int(OperatingState.HEAT_CYCLE_PREHEAT),
+    int(OperatingState.HEAT_CYCLE_ACTIVE),
+    int(OperatingState.HEAT_CYCLE_FADE),
+}
 
 
 def _enum_or_raw(enum_cls, value: int):
@@ -775,24 +779,25 @@ class PuffcoBLE:
         except LoraxError:
             return await self._read_dab_count("/p/app/info/dtot")
 
-    async def get_audit_bounds(self) -> tuple[int, int]:
-        """Ring bounds; readable entries are strictly between the two."""
-        begin = int(await self.read("/p/logv/aud/begn", 0, 4, "uint32"))
-        end = int(await self.read("/p/logv/aud/end", 0, 4, "uint32"))
+    async def get_log_bounds(self, log: str = "aud") -> tuple[int, int]:
+        """Ring bounds of the audit ("aud") or fault ("flt") log; readable
+        entries are strictly between the two."""
+        begin = int(await self.read(f"/p/logv/{log}/begn", 0, 4, "uint32"))
+        end = int(await self.read(f"/p/logv/{log}/end", 0, 4, "uint32"))
         return begin, end
 
     async def get_device_clock(self) -> int:
         return int(await self.read("/p/sys/time", 0, 4, "uint32"))
 
-    async def read_audit_entry(self, index: int) -> bytes:
+    async def read_log_entry(self, index: int, log: str = "aud") -> bytes:
         # The entry file serves whatever the selector points at, so wait for
         # the cursor to land or a slow write hands back the previous entry.
-        await self.write_short("/p/logv/aud/sel", 0, 0, struct.pack("<I", index))
+        await self.write_short(f"/p/logv/{log}/sel", 0, 0, struct.pack("<I", index))
         for _ in range(5):
-            if int(await self.read("/p/logv/aud/curr", 0, 4, "uint32")) == index:
-                return await self.read_short("/p/logv/aud/entr", 0, 16)
+            if int(await self.read(f"/p/logv/{log}/curr", 0, 4, "uint32")) == index:
+                return await self.read_short(f"/p/logv/{log}/entr", 0, 16)
             await asyncio.sleep(0.05)
-        raise LoraxError(f"Audit log cursor did not move to {index}")
+        raise LoraxError(f"Log cursor did not move to {index}")
 
     async def send_mode_command(self, command: ModeCommands) -> None:
         await self.write_short("/p/app/mc", 0, 0, bytes([int(command)]))
@@ -908,22 +913,7 @@ class PuffcoBLE:
         payload = {"lamp": {"name": "solid", "param": {"color": [hex_color]}}}
         await self.set_profile_colour(index, colour=payload)
 
-    async def set_profile_animation(
-        self,
-        index: Optional[int],
-        anim: int | AnimationCode,
-        colors: list[str],
-        speed: int = 20,
-        bright: int = 255,
-        offsets: list[int] | None = None,
-    ) -> None:
-        payload = pikaled2_payload(
-            int(anim),
-            colors,
-            speed=speed,
-            bright=bright,
-            offsets=offsets,
-        )
+    async def set_profile_mood(self, index: Optional[int], payload: dict) -> None:
         await self.set_profile_colour(index, colour=payload)
 
     async def get_profile_name(self, index: Optional[int] = None) -> str:
@@ -1061,6 +1051,7 @@ class PuffcoBLE:
             "operating_state_id": int(state),
             "heater_temp_c": heater_c,
             "heater_temp_f": None if heater_c is None else PuffcoUtils.c_to_f(heater_c),
+            **(await self._heat_timer(state)),
             "stealth": await _optional(self.is_stealth_mode(), False),
             "dabs_remaining": await _optional(self.get_approx_dabs_remaining(), 0),
             "dabs_per_day": await _optional(self.get_dabs_per_day(), 0),
@@ -1098,6 +1089,25 @@ class PuffcoBLE:
             data["profiles"] = profiles
         return data
 
+    async def _heat_timer(self, state: Any) -> dict[str, float | None]:
+        """Seconds spent in the current heat-cycle state and its planned length.
+
+        Only read while heating: outside a cycle the total is infinite and two
+        extra reads per idle poll would be wasted radio time.
+        """
+        timer: dict[str, float | None] = {"state_elapsed_s": None, "state_total_s": None}
+        if int(state) not in HEAT_CYCLE_STATES:
+            return timer
+        try:
+            elapsed = float(await self.read("/p/app/stat/elap", 0, 4, "float32"))
+            total = float(await self.read("/p/app/stat/tott", 0, 4, "float32"))
+        except Exception:
+            log.debug("heat timer read failed", exc_info=True)
+            return timer
+        timer["state_elapsed_s"] = elapsed if math.isfinite(elapsed) else None
+        timer["state_total_s"] = total if math.isfinite(total) and total > 0 else None
+        return timer
+
     async def poll_fast(self) -> dict[str, Any]:
         state = await self.get_operating_state()
         charge = await self.get_battery_charge_state()
@@ -1118,4 +1128,5 @@ class PuffcoBLE:
             "current_profile": await self.get_current_profile(),
             "heater_temp_c": heater_c,
             "heater_temp_f": None if heater_c is None else PuffcoUtils.c_to_f(heater_c),
+            **(await self._heat_timer(state)),
         }

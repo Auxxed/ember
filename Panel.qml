@@ -74,7 +74,6 @@ Panel {
       pendingStealth = undefined
       pendingLantern = undefined
       pendingSaver = undefined
-      pendingLanternTimeout = -1
       pendingBrightness = -1
       pendingDeviceName = ""
       confirmPowerOff = false
@@ -243,6 +242,32 @@ Panel {
     return formatTemp(n, undefined)
   }
 
+  // Heat timer: the Peak reports seconds spent in the current state and the
+  // state's planned length. Between polls the panel ticks the elapsed time
+  // forward itself, so the ring moves smoothly instead of jumping every 2 s.
+  property real timerSampledAt: 0
+  property real nowMs: Date.now()
+  readonly property real stateTotalS: {
+    var n = Number(statusData.state_total_s)
+    return statusData.state_total_s !== null && isFinite(n) && n > 0 ? n : NaN
+  }
+  readonly property real stateElapsedS: {
+    var n = Number(statusData.state_elapsed_s)
+    if (statusData.state_elapsed_s === null || !isFinite(n)) return NaN
+    return n + Math.max(0, nowMs - timerSampledAt) / 1000
+  }
+  readonly property bool timerActive: (preheating || atTemp)
+    && isFinite(stateTotalS) && isFinite(stateElapsedS)
+  readonly property real timerProgress: timerActive
+    ? Math.max(0, Math.min(1, stateElapsedS / stateTotalS)) : 0
+  readonly property int timerSecondsLeft: timerActive
+    ? Math.max(0, Math.ceil(stateTotalS - stateElapsedS)) : 0
+
+  // Fault log: read on request, since the first read walks hundreds of entries.
+  property var faultLog: null
+  property bool faultsLoading: false
+  property bool faultError: false
+
   property bool connecting: false
   // Set when `omapuffco` isn't installed or its daemon isn't running, e.g. right
   // after `omarchy plugin add` without install.sh.
@@ -257,7 +282,6 @@ Panel {
   property string activeMood: ""
   property string activeStyle: ""
   property string pendingDeviceName: ""
-  property int pendingLanternTimeout: -1
 
   readonly property bool onControl: page === "control"
   readonly property bool onLights: page === "lights"
@@ -281,6 +305,7 @@ Panel {
   ]
 
   readonly property var lightStyles: [
+    { "value": "solid", "label": "Solid" },
     { "value": "fill", "label": "Fill" },
     { "value": "fade", "label": "Fade" },
     { "value": "disco", "label": "Disco" },
@@ -322,9 +347,11 @@ Panel {
     for (var key in pendingColors) updated[key] = pendingColors[key]
     updated[currentProfile] = hex
     pendingColors = updated
-    // `omapuffco anim solid` paints the live lantern without reselecting the
-    // heat profile (which flashes factory green over the preview).
-    runArgv(["omapuffco", "anim", "solid", "--color", hex, "--index", String(currentProfile)])
+    // Keep the animation already picked. `anim` also paints the live lantern
+    // without reselecting the heat profile (which flashes factory green).
+    var style = activeStyle !== "" ? activeStyle : "solid"
+    activeStyle = style
+    runArgv(["omapuffco", "anim", style, "--color", hex, "--index", String(currentProfile)])
     clearPendingTimer.restart()
   }
 
@@ -435,30 +462,6 @@ Panel {
     }
   }
 
-  readonly property var lanternTimeouts: [1800, 3600, 7200, 14400]
-
-  readonly property int lanternTimeoutSec: {
-    if (pendingLanternTimeout >= 0) return pendingLanternTimeout
-    var n = Number(statusData.lantern_timeout)
-    return isFinite(n) && n > 0 ? Math.round(n) : 7200
-  }
-
-  function formatLanternTimeout(seconds) {
-    var s = Number(seconds)
-    if (!isFinite(s) || s <= 0) return ""
-    if (s >= 3600) {
-      var hours = s / 3600
-      return (hours === Math.round(hours) ? Math.round(hours) : hours.toFixed(1)) + "h"
-    }
-    return Math.round(s / 60) + "m"
-  }
-
-  function setLanternTimeout(seconds) {
-    pendingLanternTimeout = seconds
-    runArgv(["omapuffco", "lantern", "--timeout", String(seconds)])
-    clearPendingTimer.restart()
-  }
-
   readonly property string shownDeviceName: {
     if (pendingDeviceName !== "") return pendingDeviceName
     return deviceName
@@ -492,6 +495,18 @@ Panel {
   function finishSetup() {
     Util.execArgv(["xdg-terminal-exec", "bash", "-c",
       "\"$1\"; echo; read -rp 'Press Enter to close'", "omapuffco-setup", root.installScript])
+  }
+
+  function readFaults() {
+    if (faultProc.running) return
+    faultsLoading = true
+    faultError = false
+    faultProc.running = true
+  }
+
+  function formatFaultTime(ts) {
+    if (ts === null || ts === undefined) return "Before last restart"
+    return Qt.formatDateTime(new Date(Number(ts) * 1000), "MMM d, h:mm AP")
   }
 
   function connectDevice() {
@@ -761,6 +776,8 @@ Panel {
         if (!text) return
         try {
           root.statusData = JSON.parse(text)
+          root.timerSampledAt = Date.now()
+          root.nowMs = root.timerSampledAt
           root.needsSetup = false
           if (root.statusData.connected === true) {
             root.connecting = false
@@ -828,7 +845,6 @@ Panel {
       root.pendingStealth = undefined
       root.pendingLantern = undefined
       root.pendingSaver = undefined
-      root.pendingLanternTimeout = -1
       root.pendingBrightness = -1
       root.pendingDeviceName = ""
     }
@@ -842,6 +858,33 @@ Panel {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refresh()
+  }
+
+  Process {
+    id: faultProc
+    command: ["bash", "-lc", "omapuffco --json faults"]
+    onExited: function(exitCode) {
+      root.faultsLoading = false
+      if (exitCode !== 0) root.faultError = true
+    }
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!text) return
+        try {
+          root.faultLog = JSON.parse(text).faults || []
+        } catch (e) {
+          root.faultError = true
+        }
+      }
+    }
+  }
+
+  Timer {
+    interval: 100
+    repeat: true
+    running: root.opened && (root.preheating || root.atTemp)
+    onTriggered: root.nowMs = Date.now()
   }
 
   FileView {
@@ -1009,6 +1052,61 @@ Panel {
                 tint: root.urgent
                 emphasized: root.heating || root.cooling
                 onActivated: root.run("omapuffco heat stop")
+              }
+            }
+
+            Item {
+              width: parent.width
+              visible: root.timerActive
+              implicitHeight: timerRing.height
+
+              TimerRing {
+                id: timerRing
+                anchors.left: parent.left
+                width: Style.space(84)
+                height: width
+                progress: root.timerProgress
+                fillColor: root.atTemp ? Color.accent : root.urgent
+
+                Text {
+                  anchors.centerIn: parent
+                  textFormat: Text.PlainText
+                  text: root.formatDuration(root.timerSecondsLeft)
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.title
+                  font.bold: true
+                }
+              }
+
+              Column {
+                anchors.left: timerRing.right
+                anchors.leftMargin: Style.space(16)
+                anchors.right: parent.right
+                anchors.verticalCenter: timerRing.verticalCenter
+                spacing: Style.space(4)
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  text: root.atTemp ? "Session" : "Heating up"
+                  color: root.atTemp ? Color.accent : root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  font.bold: true
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  text: root.atTemp
+                    ? root.formatDuration(root.timerSecondsLeft) + " left before the Peak cools down"
+                    : "Ready in about " + root.formatDuration(root.timerSecondsLeft)
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
               }
             }
 
@@ -1384,49 +1482,13 @@ Panel {
             spacing: Style.spacing.panelGap
 
             Section {
-              title: "LANTERN"
+              title: "LEDS"
 
               SwitchRow {
                 width: parent.width
-                label: "Lantern"
+                label: "LED"
                 checked: root.lanternOn
                 onToggled: root.toggleLantern()
-              }
-
-              SwitchRow {
-                width: parent.width
-                label: "Stealth mode"
-                checked: root.stealthOn
-                onToggled: root.toggleStealth()
-              }
-
-              Item {
-                width: parent.width
-                implicitHeight: Math.max(autoOffLabel.implicitHeight, autoOffGroup.implicitHeight)
-
-                Text {
-                  id: autoOffLabel
-                  anchors.left: parent.left
-                  anchors.verticalCenter: parent.verticalCenter
-                  textFormat: Text.PlainText
-                  text: "Auto-off"
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                }
-
-                Segmented {
-                  id: autoOffGroup
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(200)
-                  compact: true
-                  options: root.lanternTimeouts.map(function(s) {
-                    return { "value": String(s), "label": root.formatLanternTimeout(s) }
-                  })
-                  value: String(root.lanternTimeoutSec)
-                  onPicked: function(value) { root.setLanternTimeout(Number(value)) }
-                }
               }
 
               Column {
@@ -1469,12 +1531,29 @@ Panel {
                   onReleased: function(v) { root.setBrightness(v) }
                 }
               }
+
+              SwitchRow {
+                width: parent.width
+                label: "Stealth mode"
+                checked: root.stealthOn
+                onToggled: root.toggleStealth()
+              }
             }
 
             Section {
               title: root.activeProfile
-                ? "COLOR · " + String(root.cleanName(root.activeProfile.name) || ("Profile " + (root.currentProfile + 1))).toUpperCase()
-                : "COLOR"
+                ? "PROFILE LIGHT · " + String(root.cleanName(root.activeProfile.name) || ("Profile " + (root.currentProfile + 1))).toUpperCase()
+                : "PROFILE LIGHT"
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: "The color and animation this profile glows with while it heats."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
 
               Grid {
                 id: colorGrid
@@ -1508,8 +1587,19 @@ Panel {
                 }
               }
 
+              Text {
+                width: parent.width
+                topPadding: Style.space(4)
+                textFormat: Text.PlainText
+                text: "Animation"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
               Segmented {
                 width: parent.width
+                compact: true
                 options: root.lightStyles
                 value: root.activeStyle
                 onPicked: function(value) { root.applyStyle(value) }
@@ -1517,7 +1607,7 @@ Panel {
             }
 
             Section {
-              title: "PRESETS"
+              title: "MOOD PRESETS"
 
               Grid {
                 id: moodGrid
@@ -1886,6 +1976,45 @@ Panel {
             }
 
             Section {
+              title: "FAULT LOG"
+              trailing: root.faultLog !== null && !root.faultsLoading
+                ? root.faultLog.length + (root.faultLog.length === 1 ? " fault" : " faults")
+                : ""
+
+              Text {
+                width: parent.width
+                visible: text !== ""
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: root.faultsLoading ? "Reading the Peak's fault log. The first read takes a minute or two."
+                  : root.faultError ? "Couldn't read the fault log. Check the Peak is connected, then try again."
+                  : root.faultLog === null ? "Heater, battery and pairing problems the Peak has recorded."
+                  : root.faultLog.length === 0 ? "No faults recorded."
+                  : ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Repeater {
+                model: root.faultLog && !root.faultsLoading ? root.faultLog.slice(0, 8) : []
+
+                InfoRow {
+                  required property var modelData
+                  width: parent ? parent.width : 0
+                  label: String(modelData.label)
+                  value: root.formatFaultTime(modelData.ts)
+                }
+              }
+
+              ActionButton {
+                width: parent.width
+                label: root.faultsLoading ? "Reading…" : (root.faultLog === null ? "Read fault log" : "Refresh")
+                onActivated: root.readFaults()
+              }
+            }
+
+            Section {
               title: "SHOW ON DEVICE"
 
               Row {
@@ -1944,6 +2073,45 @@ Panel {
           root.confirmPowerOff = false
           root.run("omapuffco off")
         }
+      }
+    }
+  }
+
+  // Circular progress track; children (the countdown) sit in the middle.
+  component TimerRing: Item {
+    id: ring
+
+    property real progress: 0
+    property color fillColor: Color.accent
+    property color trackColor: Util.alpha(root.foreground, 0.15)
+    property real thickness: Style.space(6)
+
+    onProgressChanged: canvas.requestPaint()
+    onFillColorChanged: canvas.requestPaint()
+    onTrackColorChanged: canvas.requestPaint()
+
+    Canvas {
+      id: canvas
+      anchors.fill: parent
+      onWidthChanged: requestPaint()
+      onHeightChanged: requestPaint()
+      onPaint: {
+        var ctx = getContext("2d")
+        ctx.reset()
+        var cx = width / 2
+        var cy = height / 2
+        var r = Math.min(width, height) / 2 - ring.thickness / 2
+        ctx.lineWidth = ring.thickness
+        ctx.lineCap = Style.cornerRadius > 0 ? "round" : "butt"
+        ctx.strokeStyle = ring.trackColor
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, 0, Math.PI * 2)
+        ctx.stroke()
+        if (ring.progress <= 0) return
+        ctx.strokeStyle = ring.fillColor
+        ctx.beginPath()
+        ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * ring.progress)
+        ctx.stroke()
       }
     }
   }

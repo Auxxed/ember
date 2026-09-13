@@ -160,6 +160,13 @@ def print_stats(data: dict, as_json: bool) -> None:
         print("\nNo local dab history yet — connect and take a dab to start tracking.")
 
 
+def _seconds_left(data: dict) -> int | None:
+    elapsed, total = data.get("state_elapsed_s"), data.get("state_total_s")
+    if elapsed is None or total is None:
+        return None
+    return max(0, int(round(float(total) - float(elapsed))))
+
+
 def print_waybar(data: dict) -> None:
     units = load_config().get("units") or "F"
     connected = bool(data.get("connected"))
@@ -179,8 +186,12 @@ def print_waybar(data: dict) -> None:
         text = "Peak"
     elif state_id == 7:
         css, text = "preheat", f"{temp or 'heat'} ↑"
+        if (left := _seconds_left(data)) is not None:
+            text += f" {left}s"
     elif state_id == 8:
         css, text = "ready", f"{temp or 'ready'} ●"
+        if (left := _seconds_left(data)) is not None:
+            text += f" {left}s"
     elif state_id == 9:
         css, text = "cool", f"{temp or 'cool'} ↓"
     else:
@@ -223,6 +234,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     sub.add_parser("waybar", help="One-shot Waybar JSON")
     sub.add_parser("stats", help="Dab telemetry: today/week/month/year + lifetime")
     sub.add_parser("sync", help="Pull usage history from the Peak's own log")
+    sub.add_parser("faults", help="Heater, battery and pairing faults the Peak recorded")
 
     heat = sub.add_parser("heat")
     heat.add_argument("action", choices=["start", "stop", "boost"])
@@ -357,6 +369,19 @@ async def async_main(argv: list[str] | None = None) -> int:
     elif cmd == "sync":
         result = await call("sync_usage", None, 1800.0)
         print(f"Read {result['read']} log entries from the Peak, {result['added']} new sessions.")
+    elif cmd == "faults":
+        result = await call("faults", None, 900.0)
+        if raw:
+            print(json.dumps(result, indent=2))
+        elif not result["faults"]:
+            print("No faults recorded.")
+        else:
+            from datetime import datetime
+
+            for fault in result["faults"]:
+                ts = fault.get("ts")
+                when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "before last restart"
+                print(f"  {when:<20} {fault['label']}")
     elif cmd == "heat":
         await call(f"{args.action}_heat")
         print_status(await call("status"), raw)

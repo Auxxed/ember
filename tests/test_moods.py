@@ -1,74 +1,109 @@
 import cbor2
+import pytest
 
 from omapuffco.codec import hexify
-from omapuffco.constants import AnimationCode
-from omapuffco.moods import pikaled2_payload, resolve_mood, resolve_style
+from omapuffco.moods import (
+    DISCO_OFFSETS,
+    NO_ANIMATION_OFFSETS,
+    SPLIT_OFFSETS_2,
+    mood_payload,
+    resolve_mood,
+    resolve_style,
+)
+
+
+def param(kind, colors, **kw):
+    return mood_payload(kind, colors, **kw)["lamp"]["param"]
 
 
 class TestStyles:
-    def test_connect_names_resolve(self):
-        assert resolve_style("fade")["anim"] == AnimationCode.BREATHING
-        assert resolve_style("fill")["anim"] == AnimationCode.RISING
-        assert resolve_style("spin")["anim"] == AnimationCode.CIRCLING
-        assert resolve_style("split")["anim"] == AnimationCode.CIRCLING
-        assert resolve_style("disco")["anim"] == AnimationCode.HEAT_CYCLE_ACTIVE
-        assert resolve_style("solid")["anim"] is None
+    def test_panel_styles_map_to_official_moods(self):
+        assert resolve_style("fill")["kind"] == "vertical_slideshow"
+        assert resolve_style("fade")["kind"] == "fade"
+        assert resolve_style("disco")["kind"] == "disco"
+        assert resolve_style("split")["kind"] == "split_gradient"
+        assert resolve_style("spin")["kind"] == "spin"
+        assert resolve_style("solid")["kind"] is None
 
-    def test_legacy_names_still_work(self):
-        assert resolve_style("breathing")["name"] == "fade"
-        assert resolve_style("circling")["name"] == "spin"
+    def test_cli_aliases_still_work(self):
+        assert resolve_style("breathing")["kind"] == "breathing"
+        assert resolve_style("circling")["kind"] == "circling_slow"
 
     def test_unknown_style_raises(self):
-        try:
+        with pytest.raises(ValueError, match="sparkle"):
             resolve_style("sparkle")
-        except ValueError as exc:
-            assert "sparkle" in str(exc)
-        else:
-            raise AssertionError("expected ValueError")
 
 
-class TestPikaled2Payload:
-    def test_keeps_the_colours_you_passed(self):
-        payload = pikaled2_payload(7, ["#ff4d4d", "#3b9eff"])
-        param = payload["lamp"]["param"]
-        assert param["color"] == ["#ff4d4d", "#3b9eff"]
-        assert param["colorLen"] == 2
+class TestOfficialPayloads:
+    def test_no_animation_pads_colors_and_claims_regions(self):
+        p = param("no_animation", ["#FF0000", "#00ff00"])
+        assert p["anim"] == 1 and p["plDenom"] == 1 and p["speed"] == 64
+        assert p["colorLen"] == 32
+        assert p["color"][:2] == ["#ff0000", "#00ff00"]
+        assert p["color"][2:] == ["#000000"] * 30
+        assert p["offset"] == NO_ANIMATION_OFFSETS[2]
 
-    def test_fits_in_one_lorax_write(self):
-        payload = pikaled2_payload(5, ["#ff4d4d", "#ffffff", "#3b9eff"])
-        blob = cbor2.dumps(hexify(payload), canonical=True)
-        assert len(blob) <= 250
+    def test_disco_offsets_scale_with_color_count(self):
+        p = param("disco", ["#ff0000", "#00ff00", "#0000ff"])
+        assert p["anim"] == 1
+        assert p["colorLen"] == 15
+        assert len(p["color"]) == 32
+        assert p["offset"] == [int(v * 3 + 0.5) for v in DISCO_OFFSETS]
+        assert p["plDenom"] == 0
 
-        disco = resolve_mood("disco")
-        disco_blob = cbor2.dumps(
-            hexify(
-                pikaled2_payload(
-                    disco["anim"],
-                    disco["colors"],
-                    speed=disco["speed"],
-                    offsets=disco["offsets"],
-                )
-            ),
-            canonical=True,
-        )
-        assert len(disco_blob) <= 250
+    def test_disco_phase_locks_when_tempo_is_zero(self):
+        p = param("disco", ["#ff0000", "#00ff00"], tempo=0)
+        assert p["speed"] == 64 and p["plDenom"] == 1
+
+    def test_spin_locks_phase_to_the_color_count(self):
+        p = param("spin", ["#ff4fa3", "#3b9eff"])
+        assert (p["anim"], p["plNum"], p["plDenom"]) == (7, 1, 2)
+        assert p["speed"] == 64  # tempo 0.5 -> 120 cpm -> 120 * 256 / 480
+
+    def test_split_gradient_picks_offsets_by_color_count(self):
+        assert param("split_gradient", ["#ff0000", "#00ff00"])["offset"] == SPLIT_OFFSETS_2
+
+    def test_color_cycle_starts_on_each_user_color(self):
+        p = param("disco", ["#ff0000", "#0000ff"])
+        assert p["color"][0] == "#ff0000"
+        assert p["color"][5] == "#0000ff"
+
+    def test_single_color_on_a_two_color_mood_cycles_against_black(self):
+        p = param("fade", ["#ff6a1a"])
+        assert p["colorLen"] == 10
+        assert p["color"][0] == "#ff6a1a"
+        assert "#000000" in p["color"][:10]
+
+    def test_rejects_non_hex_colors(self):
+        with pytest.raises(ValueError):
+            mood_payload("fade", ["red", "#00ff00"])
+
+    @pytest.mark.parametrize(
+        "kind",
+        ["no_animation", "disco", "fade", "spin", "split_gradient", "vertical_slideshow", "breathing", "circling_slow"],
+    )
+    def test_every_mood_encodes_to_cbor(self, kind):
+        blob = cbor2.dumps(hexify(mood_payload(kind, ["#ff0000", "#00ff00", "#0000ff"])), canonical=True)
+        decoded = cbor2.loads(blob)
+        assert len(decoded["lamp"]["param"]["color"]) == 32 * 3
 
 
 class TestExclusiveMoods:
-    def test_hologram_is_purple_and_blue(self):
+    def test_hologram_is_a_spin_of_purple_and_blues(self):
         mood = resolve_mood("hologram")
         assert mood["label"] == "Hologram"
         assert "#7c3aed" in mood["colors"]
-        assert mood["anim"] == AnimationCode.CIRCLING
+        assert mood["kind"] == "spin"
 
     def test_july4_alias(self):
         assert resolve_mood("4th of July")["id"] == "july4"
         assert resolve_mood("july4")["colors"] == ["#ff4d4d", "#ffffff", "#3b9eff"]
 
+    def test_every_preset_builds_a_payload(self):
+        for key in ("puffcon", "july4", "candle", "hologram", "lupus", "disco"):
+            mood = resolve_mood(key)
+            assert mood_payload(mood["kind"], mood["colors"])["lamp"]["name"] == "pikaled2"
+
     def test_unknown_mood_lists_options(self):
-        try:
+        with pytest.raises(ValueError, match="puffcon"):
             resolve_mood("neon")
-        except ValueError as exc:
-            assert "puffcon" in str(exc)
-        else:
-            raise AssertionError("expected ValueError")
