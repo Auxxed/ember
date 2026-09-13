@@ -1,4 +1,8 @@
-"""Dab-count history.
+"""Dab-count history, kept per Peak.
+
+Each Peak's history lives in its own file keyed by serial number, so a Peak
+brings its usage along to any computer (rebuilt from its own audit log) and a
+friend's Peak shows its own stats rather than mixing into yours.
 
 Two sources: heat sessions read from the Peak's own audit log (see
 audit.py), and cycles OmaPuffco watched locally while connected. The device log
@@ -9,6 +13,7 @@ and still supply per-session temperature, duration and color.
 from __future__ import annotations
 
 import json
+import re
 import statistics
 import time
 from datetime import datetime, timedelta
@@ -19,9 +24,48 @@ from .paths import data_dir, write_json_atomic
 
 RETENTION_DAYS = 730
 
+_device_serial: str | None = None
+
+
+def use_device(serial: str | None) -> None:
+    """Point history at one Peak's file; None falls back to the shared file."""
+    global _device_serial
+    _device_serial = (serial or "").strip() or None
+    if _device_serial:
+        _adopt_legacy(_device_serial)
+
+
+def current_device() -> str | None:
+    return _device_serial
+
+
+def _legacy_path() -> Path:
+    return data_dir() / "dabs.json"
+
 
 def history_path() -> Path:
-    return data_dir() / "dabs.json"
+    if _device_serial:
+        # A leading dot would hide the file or read as a relative path part.
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", _device_serial).lstrip(".") or "peak"
+        return data_dir() / "devices" / f"{safe}.json"
+    return _legacy_path()
+
+
+def _adopt_legacy(serial: str) -> None:
+    """Move history from before it was kept per Peak onto the Peak it came from."""
+    target = history_path()
+    legacy = _legacy_path()
+    if target.exists() or not legacy.exists():
+        return
+    try:
+        data = json.loads(legacy.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(data, dict) or data.get("device_log_serial") not in (None, serial):
+        return
+    write_json_atomic(target, data)
+    # Renamed rather than deleted, and so a second Peak can't adopt it too.
+    legacy.rename(legacy.with_name("dabs.json.migrated"))
 
 
 def _load() -> dict[str, Any]:

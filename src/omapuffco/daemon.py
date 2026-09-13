@@ -17,7 +17,7 @@ from typing import Any, Optional
 from . import audit, faults, history
 from .ble import LoraxError, PuffcoBLE
 from .constants import PROFILE_COUNT, OperatingState
-from .paths import load_config, log_path, save_config, socket_path
+from .paths import load_config, save_config, socket_path
 from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
@@ -70,7 +70,8 @@ def snap_clean_every(value: Any) -> int:
         n = int(round(float(value)))
     except (TypeError, ValueError):
         n = DEFAULT_CLEAN_EVERY
-    n = int(round(n / CLEAN_EVERY_STEP) * CLEAN_EVERY_STEP)
+    # Half-up, like the panel's stepper (Python's round() sends 25 to 20).
+    n = (n + CLEAN_EVERY_STEP // 2) // CLEAN_EVERY_STEP * CLEAN_EVERY_STEP
     return max(CLEAN_EVERY_MIN, min(CLEAN_EVERY_MAX, n))
 
 
@@ -102,6 +103,9 @@ class OmaPuffcoDaemon:
     def __init__(self, sock: Path, debug: bool = False):
         self.socket_path = sock
         self.debug = debug
+        # Usage belongs to a Peak, not this computer: show the last Peak's
+        # stats until another one connects.
+        history.use_device(load_config().get("last_serial"))
         self.device: Optional[PuffcoBLE] = None
         self.status: dict[str, Any] = self._empty_status()
         self.clients: set[asyncio.StreamWriter] = set()
@@ -124,10 +128,8 @@ class OmaPuffcoDaemon:
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
         self._saver_sleep_task: Optional[asyncio.Task] = None
-        cfg = load_config()
-        self.clean_every = snap_clean_every(cfg.get("clean_every"))
-        self.clean_at_total = cfg.get("clean_at_total")
-        self.clean_notified = _as_bool(cfg.get("clean_notified"))
+        self._clean_serial: Optional[str] = None
+        self._load_clean(load_config().get("last_serial"))
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.status["battery_saver"] = self.battery_saver
@@ -165,6 +167,7 @@ class OmaPuffcoDaemon:
             "clean_every": DEFAULT_CLEAN_EVERY,
             "clean_remaining": DEFAULT_CLEAN_EVERY,
             "clean_due": False,
+            "usage_syncing": False,
             "birthday": None,
             "birthday_label": "",
             "dabs_remaining": 0,
@@ -316,12 +319,23 @@ class OmaPuffcoDaemon:
             await ble.disconnect()
             self.device = None
             raise RuntimeError("That device is a Proxy/Pivot. OmaPuffco only talks to Peak Pro.")
+        serial = str(snap.get("serial") or "")
+        # Each Peak keeps its own usage and cleaning countdown, so pick this
+        # Peak's before the snapshot records anything.
+        history.use_device(serial)
+        self._load_clean(serial or None)
+        self.preheat_scale = history.preheat_scale()
+        self._preheat_backfilled = False
         self._apply_snapshot(snap)
+        # Re-read: the snapshot above may have just saved a cleaning baseline,
+        # which the config loaded before it would overwrite.
+        latest = load_config()
         save_config(
             {
-                **cfg,
+                **latest,
                 "device_mac": snap.get("device_mac") or mac or "",
                 "device_name": snap.get("device_name") or name or "",
+                "last_serial": serial or latest.get("last_serial") or "",
             }
         )
         self._start_poll()
@@ -347,9 +361,16 @@ class OmaPuffcoDaemon:
                 and int(state["index"]) < end
             ):
                 start = max(start, int(state["index"]) + 1)
-            entries = [
-                audit.parse_entry(i, await dev.read_log_entry(i)) for i in range(start, end)
-            ]
+            # A first read on a new computer walks the whole ring; tell the panel.
+            self.status["usage_syncing"] = end - start > 50
+            if self.status["usage_syncing"]:
+                await self._broadcast_event("status", self.status)
+            try:
+                entries = [
+                    audit.parse_entry(i, await dev.read_log_entry(i)) for i in range(start, end)
+                ]
+            finally:
+                self.status["usage_syncing"] = False
             clock = await dev.get_device_clock()
             found = audit.sessions(entries, clock, time.time())
             added = history.record_device_sessions(found, last_index=max(end - 1, start - 1), serial=serial)
@@ -436,6 +457,8 @@ class OmaPuffcoDaemon:
                     if ticks % 8 == 0:
                         snap = await self.device.snapshot(include_profiles=True)
                         self._apply_snapshot(snap)
+                        # Catches an odometer bump that lands only when a cycle ends.
+                        await self._refresh_clean(self.status.get("total_dabs"), notify=True)
                     else:
                         snap = await self.device.poll_fast()
                         self._stamp_local(snap)
@@ -450,12 +473,7 @@ class OmaPuffcoDaemon:
                     if prev_state != new_state and new_state == int(OperatingState.HEAT_CYCLE_ACTIVE):
                         history.record_cycle(**self._cycle_meta())
                         self.status["telemetry"] = history.get_stats()
-                        try:
-                            counted = int(self.status.get("total_dabs") or 0) + 1
-                        except (TypeError, ValueError):
-                            counted = 0
-                        self.status["total_dabs"] = counted
-                        await self._refresh_clean(counted, notify=True)
+                        await self._count_session()
                         self._spawn(self._sync_usage_safe(delay=5.0))
                         await self._broadcast_event(
                             "notify",
@@ -540,11 +558,29 @@ class OmaPuffcoDaemon:
             "clean_due": remaining <= 0,
         }
 
+    def _load_clean(self, serial: Optional[str]) -> None:
+        """This Peak's cleaning baseline; the interval is one preference for all."""
+        cfg = load_config()
+        self.clean_every = snap_clean_every(cfg.get("clean_every"))
+        entry = (cfg.get("clean_by_serial") or {}).get(serial) if serial else None
+        if entry is None and (serial is None or cfg.get("last_serial") in (None, "", serial)):
+            # Saved before the countdown was kept per Peak: it belongs to the last one used.
+            entry = {"at_total": cfg.get("clean_at_total"), "notified": cfg.get("clean_notified")}
+        entry = entry or {}
+        self.clean_at_total = entry.get("at_total")
+        self.clean_notified = _as_bool(entry.get("notified"))
+        self._clean_serial = serial
+
     def _save_clean(self) -> None:
         cfg = load_config()
         cfg["clean_every"] = self.clean_every
-        cfg["clean_at_total"] = self.clean_at_total
-        cfg["clean_notified"] = self.clean_notified
+        if self._clean_serial:
+            by_serial = dict(cfg.get("clean_by_serial") or {})
+            by_serial[self._clean_serial] = {"at_total": self.clean_at_total, "notified": self.clean_notified}
+            cfg["clean_by_serial"] = by_serial
+        else:
+            cfg["clean_at_total"] = self.clean_at_total
+            cfg["clean_notified"] = self.clean_notified
         save_config(cfg)
 
     def _baseline_clean(self, total: Any) -> None:
@@ -588,6 +624,23 @@ class OmaPuffcoDaemon:
         except OSError:
             pass
 
+    async def _count_session(self) -> None:
+        """Refresh the cleaning countdown from the Peak's own lifetime counter.
+
+        Adding one locally double-counted whenever the Peak had already bumped
+        its odometer for the session.
+        """
+        dev = self.device
+        if not dev or not dev.is_connected:
+            return
+        try:
+            total = await dev.get_total_dabs()
+        except Exception:
+            log.debug("session total read failed", exc_info=True)
+            return
+        self.status["total_dabs"] = total
+        await self._refresh_clean(total, notify=True)
+
     async def _set_clean_every(self, dabs: Any) -> dict[str, Any]:
         self.clean_every = snap_clean_every(dabs)
         self._save_clean()
@@ -598,7 +651,11 @@ class OmaPuffcoDaemon:
             total = int(self.status.get("total_dabs") or 0)
         except (TypeError, ValueError):
             total = 0
-        self.clean_at_total = max(0, total)
+        # Disconnected, the count reads 0, and a 0 baseline would make every
+        # lifetime dab count as used on the next connect.
+        if not (self.device and self.device.is_connected) or total <= 0:
+            raise RuntimeError("Connect the Peak first so the countdown starts from its real dab count.")
+        self.clean_at_total = total
         self.clean_notified = False
         self._save_clean()
         return await self._refresh_clean(total)

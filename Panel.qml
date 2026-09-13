@@ -1667,6 +1667,17 @@ Panel {
             visible: root.onUsage && root.connected
             spacing: Style.spacing.panelGap
 
+            Text {
+              width: parent.width
+              visible: root.statusData.usage_syncing === true
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              text: "Reading usage history from this Peak. The first read on a new computer takes a minute or two."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
             Row {
               id: summaryRow
               width: parent.width

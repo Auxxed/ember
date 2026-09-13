@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from omapuffco.daemon import (
     CLEAN_EVERY_MAX,
@@ -28,6 +31,7 @@ class TestSnapCleanEvery:
     def test_rounds_to_tens(self):
         assert snap_clean_every(14) == 10
         assert snap_clean_every(15) == 20
+        assert snap_clean_every(25) == 30
         assert snap_clean_every(30) == 30
 
     def test_clamps_to_the_allowed_range(self):
@@ -60,6 +64,7 @@ class TestCleanCommands:
 
     def test_mark_cleaned_resets_the_countdown(self, tmp_path):
         daemon = _daemon(tmp_path)
+        daemon.device = SimpleNamespace(is_connected=True)
         daemon.status["total_dabs"] = 800
         asyncio.run(daemon.handle("set_clean_every", {"dabs": 20}))
         daemon.clean_at_total = 780
@@ -94,3 +99,33 @@ class TestCleanCommands:
         assert sent == [True]
         assert daemon.clean_notified is True
         assert daemon.status["clean_due"] is True
+
+
+class TestCleanGuards:
+    def test_mark_cleaned_refuses_without_a_connected_peak(self, tmp_path):
+        daemon = _daemon(tmp_path)
+        daemon.clean_at_total = 863
+        with pytest.raises(RuntimeError, match="Connect the Peak"):
+            asyncio.run(daemon.handle("mark_cleaned", {}))
+        assert daemon.clean_at_total == 863
+
+    def test_a_session_uses_the_peaks_count_not_plus_one(self, tmp_path, monkeypatch):
+        daemon = _daemon(tmp_path)
+        daemon.clean_every = 10
+        daemon.clean_at_total = 100
+        daemon.status["total_dabs"] = 110  # the Peak already counted this session
+
+        async def total() -> int:
+            return 110
+
+        sent = []
+
+        async def fake_notify() -> None:
+            sent.append(True)
+
+        daemon.device = SimpleNamespace(is_connected=True, get_total_dabs=total)
+        monkeypatch.setattr(daemon, "_notify_clean", fake_notify)
+        asyncio.run(daemon._count_session())
+        assert daemon.status["total_dabs"] == 110
+        assert daemon.status["clean_remaining"] == 0
+        assert sent == [True]

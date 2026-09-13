@@ -27,6 +27,9 @@ async def call(cmd: str, args: dict | None = None, timeout: float = 30.0) -> Any
         return await rpc(cmd, args, timeout=timeout)
     except DaemonNotRunning as exc:
         raise SystemExit(str(exc)) from exc
+    except RuntimeError as exc:
+        # A command the daemon refused (not connected, bad value): say why, no traceback.
+        raise SystemExit(str(exc)) from exc
     except TimeoutError as exc:
         raise SystemExit(
             "Timed out talking to the OmaPuffco daemon. If a connect is already running, wait for it to finish."

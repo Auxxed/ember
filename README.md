@@ -90,6 +90,12 @@ the Peak's current clock, and skips cycles from before a later restart rather
 than guessing their date. For any period the device log no longer covers, the
 cycles OmaPuffco saw while connected fill in.
 
+Usage is kept per Peak, by serial number. Your Peak brings its stats to any
+computer running OmaPuffco, rebuilt from its own log, and a friend's Peak shows
+its own stats instead of mixing into yours. The Peak's log holds roughly its
+last 1,000 events (several weeks of use); older day-by-day history stays on
+the computer that recorded it. The lifetime total always comes from the Peak.
+
 ## Command line
 
 The widget runs these under the hood; they also work for scripting or outside
