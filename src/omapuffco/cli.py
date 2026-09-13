@@ -1,4 +1,4 @@
-"""ember — Peak Pro companion CLI. No args prints usage."""
+"""omapuffco — Peak Pro companion CLI. No args prints usage."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ async def call(cmd: str, args: dict | None = None, timeout: float = 30.0) -> Any
         raise SystemExit(str(exc)) from exc
     except TimeoutError as exc:
         raise SystemExit(
-            "Timed out talking to emberd. If a connect is already running, wait for it to finish."
+            "Timed out talking to the OmaPuffco daemon. If a connect is already running, wait for it to finish."
         ) from exc
 
 
@@ -203,11 +203,11 @@ def print_waybar(data: dict) -> None:
 
 async def async_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="ember",
-        description="Ember — Peak Pro companion for Linux",
+        prog="omapuffco",
+        description="OmaPuffco — Peak Pro companion for Linux",
     )
     parser.add_argument("--json", action="store_true", help="Print raw JSON")
-    parser.add_argument("--version", action="version", version=f"ember {__version__}")
+    parser.add_argument("--version", action="version", version=f"omapuffco {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
     sub.add_parser("daemon", help="Run the BLE daemon in the foreground")
@@ -315,7 +315,7 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     if cmd == "ping":
         print_status_raw = await call("ping")
-        print(json.dumps(print_status_raw, indent=2) if raw else f"emberd pid {print_status_raw.get('pid')}")
+        print(json.dumps(print_status_raw, indent=2) if raw else f"omapuffco daemon pid {print_status_raw.get('pid')}")
     elif cmd == "scan":
         result = await call("scan", {"timeout": args.timeout}, timeout=max(45, args.timeout + 25))
         if raw:

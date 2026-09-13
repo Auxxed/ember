@@ -22,7 +22,7 @@ from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
 
-log = logging.getLogger("ember.daemon")
+log = logging.getLogger("omapuffco.daemon")
 
 HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
@@ -52,7 +52,7 @@ def _validate_index(args: dict) -> int:
     return index
 
 
-class EmberDaemon:
+class OmaPuffcoDaemon:
     def __init__(self, sock: Path, debug: bool = False):
         self.socket_path = sock
         self.debug = debug
@@ -235,7 +235,7 @@ class EmberDaemon:
         if is_proxy(snap.get("product")):
             await ble.disconnect()
             self.device = None
-            raise RuntimeError("That device is a Proxy/Pivot. Ember only talks to Peak Pro.")
+            raise RuntimeError("That device is a Proxy/Pivot. OmaPuffco only talks to Peak Pro.")
         self._apply_snapshot(snap)
         save_config(
             {
@@ -331,7 +331,7 @@ class EmberDaemon:
                         self._spawn(self._sync_usage_safe(delay=5.0))
                         await self._broadcast_event(
                             "notify",
-                            {"title": "Ember", "body": "Peak Pro is ready"},
+                            {"title": "OmaPuffco", "body": "Peak Pro is ready"},
                         )
                     if self.status.get("battery", 100) <= 15 and ticks % 12 == 0:
                         await self._broadcast_event(
@@ -359,7 +359,7 @@ class EmberDaemon:
     async def handle(self, cmd: str, args: dict) -> Any:
         args = args or {}
         if cmd == "ping":
-            return {"version": "0.1.0", "pid": os.getpid()}
+            return {"version": "0.2.0", "pid": os.getpid()}
         if cmd == "scan":
             timeout = float(args.get("timeout", 6))
             scanner = PuffcoBLE(
@@ -677,7 +677,7 @@ class EmberDaemon:
 
 
 async def amain(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="Ember Peak Pro BLE daemon")
+    parser = argparse.ArgumentParser(description="OmaPuffco Peak Pro BLE daemon")
     parser.add_argument("--socket", type=Path, default=socket_path())
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args(argv)
@@ -687,7 +687,7 @@ async def amain(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    daemon = EmberDaemon(args.socket, debug=args.debug)
+    daemon = OmaPuffcoDaemon(args.socket, debug=args.debug)
     await daemon.start()
 
     stop = asyncio.Event()

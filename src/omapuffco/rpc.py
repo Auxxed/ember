@@ -1,4 +1,4 @@
-"""Newline-delimited JSON client for the Ember daemon."""
+"""Newline-delimited JSON client for the OmaPuffco daemon."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ async def rpc(
 ) -> Any:
     sock = path or socket_path()
     if not sock.exists():
-        raise DaemonNotRunning(f"Ember daemon is not running ({sock})")
+        raise DaemonNotRunning(f"OmaPuffco daemon is not running ({sock})")
     reader, writer = await asyncio.open_unix_connection(str(sock))
     try:
         writer.write((json.dumps({"id": 1, "cmd": cmd, "args": args or {}}) + "\n").encode())
@@ -47,7 +47,7 @@ async def rpc(
             pass
 
 
-class EmberClient:
+class OmaPuffcoClient:
     """Long-lived socket client. Events fire on the asyncio loop."""
 
     def __init__(self, path: Path | None = None):
@@ -68,7 +68,7 @@ class EmberClient:
         if self.connected:
             return
         if not self.path.exists():
-            raise DaemonNotRunning(f"Ember daemon is not running ({self.path})")
+            raise DaemonNotRunning(f"OmaPuffco daemon is not running ({self.path})")
         self._reader, self._writer = await asyncio.open_unix_connection(str(self.path))
         self._pump = asyncio.create_task(self._read_loop())
 

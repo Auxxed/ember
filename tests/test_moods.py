@@ -1,8 +1,8 @@
 import cbor2
 
-from ember.codec import hexify
-from ember.constants import AnimationCode
-from ember.moods import pikaled2_payload, resolve_mood, resolve_style
+from omapuffco.codec import hexify
+from omapuffco.constants import AnimationCode
+from omapuffco.moods import pikaled2_payload, resolve_mood, resolve_style
 
 
 class TestStyles:

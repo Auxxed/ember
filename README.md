@@ -1,32 +1,32 @@
-# Ember
+# OmaPuffco
 
-[![tests](https://github.com/Auxxed/ember/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/ember/actions/workflows/tests.yml)
+[![tests](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml)
 
 Puffco Peak Pro controls for the [Omarchy](https://omarchy.org/) bar: chamber
 temperature and battery at a glance, heat and profile controls, lantern and
 mood lights, and usage stats read straight from the device.
 
-Ember is unofficial and not affiliated with Puffco. It speaks the
+OmaPuffco is unofficial and not affiliated with Puffco. It speaks the
 reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
 break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
-![Ember panel](preview.png)
+![OmaPuffco panel](preview.png)
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/Auxxed/ember --enable && ~/.config/omarchy/plugins/auxxed.ember/install.sh
+omarchy plugin add https://github.com/Auxxed/omapuffco --enable && ~/.config/omarchy/plugins/auxxed.omapuffco/install.sh
 ```
 
 `omarchy plugin add` installs the bar widget. `install.sh` sets up what the
 widget needs, all inside your home directory with no root access:
 
-- a Python environment in `~/.local/share/ember/venv` with the Bluetooth
+- a Python environment in `~/.local/share/omapuffco/venv` with the Bluetooth
   libraries from PyPI: [`bleak`](https://pypi.org/project/bleak/),
   [`cbor2`](https://pypi.org/project/cbor2/) and
   [`dbus-fast`](https://pypi.org/project/dbus-fast/)
-- the `ember` command in `~/.local/bin`
-- the `ember-daemon` systemd user service, which holds the one Bluetooth
+- the `omapuffco` command in `~/.local/bin`
+- the `omapuffco-daemon` systemd user service, which holds the one Bluetooth
   connection the widget and the command share
 
 If you add the plugin without running `install.sh`, the widget shows
@@ -36,24 +36,28 @@ Requirements: Python 3.10 or newer, BlueZ, and systemd — all present on a
 standard Omarchy install.
 
 Then wake the Peak, keep it near the computer, and disconnect the Puffco phone
-app (the Peak accepts one connection at a time). Click the Ember widget and
+app (the Peak accepts one connection at a time). Click the OmaPuffco widget and
 choose **Connect**.
 
 ## Update
 
 ```bash
-omarchy plugin update auxxed.ember && ~/.config/omarchy/plugins/auxxed.ember/install.sh
+omarchy plugin update auxxed.omapuffco && ~/.config/omarchy/plugins/auxxed.omapuffco/install.sh
 ```
+
+Used this back when it was called Ember? Run the install line above.
+`install.sh` moves your settings and dab history across and swaps the old
+widget out, keeping its place in the bar.
 
 ## Remove
 
 ```bash
-~/.config/omarchy/plugins/auxxed.ember/uninstall.sh
+~/.config/omarchy/plugins/auxxed.omapuffco/uninstall.sh
 ```
 
-This stops the daemon, removes the `ember` command and the Python environment,
-and removes the plugin. Your dab history (`~/.local/share/ember/dabs.json`) and
-settings (`~/.config/ember`) are kept; delete those folders too for a clean
+This stops the daemon, removes the `omapuffco` command and the Python environment,
+and removes the plugin. Your dab history (`~/.local/share/omapuffco/dabs.json`) and
+settings (`~/.config/omapuffco`) are kept; delete those folders too for a clean
 removal.
 
 ## Using it
@@ -73,13 +77,13 @@ removal.
 
 ### Where the usage numbers come from
 
-The Peak keeps its own log of heat cycles. Ember reads it when it connects and
+The Peak keeps its own log of heat cycles. OmaPuffco reads it when it connects and
 after each session, and counts every cycle that reached temperature;
-`ember sync` does the same on demand. Until the phone app sets the Peak's clock
-after a restart, the log's timestamps count from boot. Ember places those using
+`omapuffco sync` does the same on demand. Until the phone app sets the Peak's clock
+after a restart, the log's timestamps count from boot. OmaPuffco places those using
 the Peak's current clock, and skips cycles from before a later restart rather
 than guessing their date. For any period the device log no longer covers, the
-cycles Ember saw while connected fill in.
+cycles OmaPuffco saw while connected fill in.
 
 ## Command line
 
@@ -87,37 +91,37 @@ The widget runs these under the hood; they also work for scripting or outside
 Omarchy.
 
 ```bash
-ember scan
-ember connect                  # or: ember connect --mac AA:BB:...
-ember status
-ember heat start|stop|boost
-ember profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
-ember lantern on
-ember brightness 160
-ember stealth on
-ember stats                    # today / week / month / year / lifetime
-ember sync                     # pull usage history from the Peak's log
-ember waybar
-ember sleep
-ember off
+omapuffco scan
+omapuffco connect                  # or: omapuffco connect --mac AA:BB:...
+omapuffco status
+omapuffco heat start|stop|boost
+omapuffco profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
+omapuffco lantern on
+omapuffco brightness 160
+omapuffco stealth on
+omapuffco stats                    # today / week / month / year / lifetime
+omapuffco sync                     # pull usage history from the Peak's log
+omapuffco waybar
+omapuffco sleep
+omapuffco off
 ```
 
 ### Waybar
 
 ```jsonc
-"custom/ember": {
-  "exec": "ember waybar",
+"custom/omapuffco": {
+  "exec": "omapuffco waybar",
   "return-type": "json",
   "interval": 2,
-  "on-click": "ember status",
-  "on-click-right": "ember heat start"
+  "on-click": "omapuffco status",
+  "on-click-right": "omapuffco heat start"
 }
 ```
 
 ## Bluetooth adapter
 
-Ember uses the first powered adapter BlueZ reports. To pin a specific one when
-you have several, set it in `~/.config/ember/config.json` (`bluetoothctl list`
+OmaPuffco uses the first powered adapter BlueZ reports. To pin a specific one when
+you have several, set it in `~/.config/omapuffco/config.json` (`bluetoothctl list`
 shows what you have):
 
 ```json
@@ -127,11 +131,11 @@ shows what you have):
 ## Development
 
 ```bash
-git clone https://github.com/Auxxed/ember.git
-cd ember
+git clone https://github.com/Auxxed/omapuffco.git
+cd omapuffco
 ./install.sh                   # links the checkout in as a development plugin
-~/.local/share/ember/venv/bin/pip install pytest
-~/.local/share/ember/venv/bin/python -m pytest
+~/.local/share/omapuffco/venv/bin/pip install pytest
+~/.local/share/omapuffco/venv/bin/python -m pytest
 ```
 
 Keep virtual environments outside the checkout: `omarchy plugin` refuses

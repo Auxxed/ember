@@ -1,11 +1,11 @@
 [Unit]
-Description=Ember Peak Pro BLE daemon
+Description=OmaPuffco Peak Pro BLE daemon
 After=bluetooth.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/share/ember/venv/bin/python -m ember.daemon
-Environment=PYTHONPATH=%h/.local/share/ember/src
+ExecStart=%h/.local/share/omapuffco/venv/bin/python -m omapuffco.daemon
+Environment=PYTHONPATH=%h/.local/share/omapuffco/src
 Restart=on-failure
 RestartSec=2
 TimeoutStopSec=8

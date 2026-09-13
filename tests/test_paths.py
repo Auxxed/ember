@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from ember import paths
+from omapuffco import paths
 
 
 class TestConfig:
@@ -73,7 +73,7 @@ class TestWriteJsonAtomic:
 
 class TestPathLayout:
     def test_socket_env_override_wins(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("EMBER_SOCKET", str(tmp_path / "custom.sock"))
+        monkeypatch.setenv("OMAPUFFCO_SOCKET", str(tmp_path / "custom.sock"))
         assert paths.socket_path() == tmp_path / "custom.sock"
 
     def test_config_and_data_live_under_their_xdg_roots(self, isolated_xdg):

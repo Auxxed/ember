@@ -40,7 +40,7 @@ STYLES: dict[str, dict[str, Any]] = {
     "spin": {"anim": AnimationCode.CIRCLING, "offsets": even_offsets(), "speed": 28},
 }
 
-# Aliases so `ember anim breathing` and `ember anim fade` both work.
+# Aliases so `omapuffco anim breathing` and `omapuffco anim fade` both work.
 STYLE_ALIASES = {
     "breathing": "fade",
     "rising": "fill",

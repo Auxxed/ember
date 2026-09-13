@@ -1,4 +1,4 @@
-from ember.vapor import name_for, snap, value_for
+from omapuffco.vapor import name_for, snap, value_for
 
 
 class TestVaporLevels:

@@ -1,7 +1,7 @@
 """Dab-count history.
 
 Two sources: heat sessions read from the Peak's own audit log (see
-audit.py), and cycles Ember watched locally while connected. The device log
+audit.py), and cycles OmaPuffco watched locally while connected. The device log
 is authoritative for the period it covers; local events fill in before it
 and still supply per-session temperature, duration and color.
 """
@@ -75,7 +75,7 @@ def record_total(total_dabs: Optional[int]) -> Optional[dict[str, Any]]:
 
     if last is None or not seen:
         # First real observation: set a baseline, don't invent history for
-        # dabs taken before Ember was installed / first connected. A zero
+        # dabs taken before OmaPuffco was installed / first connected. A zero
         # does not count as "seen" — that's also the shape of a failed
         # read that used to get stored as last_total.
         data["last_total"] = total_dabs
@@ -124,7 +124,7 @@ def record_cycle(
     time_s: float | None = None,
     color: str | None = None,
 ) -> dict[str, Any]:
-    """Log one heat cycle Ember actually watched reach temperature."""
+    """Log one heat cycle OmaPuffco actually watched reach temperature."""
     data = _load()
     now = time.time()
     last = data.get("last_total")

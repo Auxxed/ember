@@ -19,5 +19,5 @@ def isolated_xdg(tmp_path, monkeypatch):
         target = tmp_path / sub
         target.mkdir()
         monkeypatch.setenv(name, str(target))
-    monkeypatch.delenv("EMBER_SOCKET", raising=False)
+    monkeypatch.delenv("OMAPUFFCO_SOCKET", raising=False)
     return tmp_path

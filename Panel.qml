@@ -6,8 +6,8 @@ import qs.Commons
 
 Panel {
   id: root
-  moduleName: "auxxed.ember"
-  ipcTarget: "auxxed.ember"
+  moduleName: "auxxed.omapuffco"
+  ipcTarget: "auxxed.omapuffco"
   manageIpc: false
 
   property var anchorItem: null
@@ -97,7 +97,7 @@ Panel {
     return null
   }
 
-  // OperatingState ids from ember's constants.py: 7 preheat, 8 at-temp, 9 fade.
+  // OperatingState ids from omapuffco's constants.py: 7 preheat, 8 at-temp, 9 fade.
   readonly property int stateId: {
     var n = Number(statusData.operating_state_id)
     return isFinite(n) ? n : -1
@@ -107,7 +107,7 @@ Panel {
   readonly property bool cooling: connected && stateId === 9
   readonly property bool heating: preheating || atTemp
 
-  // `ember` stores the user's unit preference in its own config; the bar label
+  // `omapuffco` stores the user's unit preference in its own config; the bar label
   // already honors it, so the panel has to as well or the two disagree.
   property string units: "F"
   readonly property bool celsius: units === "C"
@@ -243,7 +243,7 @@ Panel {
   }
 
   property bool connecting: false
-  // Set when `ember` isn't installed or its daemon isn't running, e.g. right
+  // Set when `omapuffco` isn't installed or its daemon isn't running, e.g. right
   // after `omarchy plugin add` without install.sh.
   property bool needsSetup: false
   readonly property string installScript: Qt.resolvedUrl("install.sh").toString().replace(/^file:\/\//, "")
@@ -290,7 +290,7 @@ Panel {
     activeMood = id
     activeStyle = ""
     pendingLantern = true
-    var args = ["ember", "mood", id]
+    var args = ["omapuffco", "mood", id]
     if (currentProfile >= 0) {
       args.push("--index")
       args.push(String(currentProfile))
@@ -304,7 +304,7 @@ Panel {
     pendingLantern = true
     var hex = activeProfile ? profileSwatch(activeProfile.color) : ""
     if (hex === "") hex = colorPalette[0]
-    var args = ["ember", "anim", name, "--color", hex]
+    var args = ["omapuffco", "anim", name, "--color", hex]
     if (currentProfile >= 0) {
       args.push("--index")
       args.push(String(currentProfile))
@@ -320,9 +320,9 @@ Panel {
     for (var key in pendingColors) updated[key] = pendingColors[key]
     updated[currentProfile] = hex
     pendingColors = updated
-    // `ember anim solid` paints the live lantern without reselecting the
+    // `omapuffco anim solid` paints the live lantern without reselecting the
     // heat profile (which flashes factory green over the preview).
-    runArgv(["ember", "anim", "solid", "--color", hex, "--index", String(currentProfile)])
+    runArgv(["omapuffco", "anim", "solid", "--color", hex, "--index", String(currentProfile)])
     clearPendingTimer.restart()
   }
 
@@ -345,7 +345,7 @@ Panel {
     for (var key in pendingVapors) updated[key] = pendingVapors[key]
     updated[currentProfile] = name
     pendingVapors = updated
-    runArgv(["ember", "profile", String(currentProfile), "--vapor", name])
+    runArgv(["omapuffco", "profile", String(currentProfile), "--vapor", name])
     clearPendingTimer.restart()
   }
 
@@ -424,7 +424,7 @@ Panel {
     for (key in seen) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      var args = ["ember", "profile", String(index)]
+      var args = ["omapuffco", "profile", String(index)]
       if (pendingBoostTemps[key] !== undefined)
         args.push("--boost-temp", String(Math.round(pendingBoostTemps[key])))
       if (pendingBoostTimes[key] !== undefined)
@@ -453,7 +453,7 @@ Panel {
 
   function setLanternTimeout(seconds) {
     pendingLanternTimeout = seconds
-    runArgv(["ember", "lantern", "--timeout", String(seconds)])
+    runArgv(["omapuffco", "lantern", "--timeout", String(seconds)])
     clearPendingTimer.restart()
   }
 
@@ -467,7 +467,7 @@ Panel {
     cancelEdit()
     if (name === "") return
     pendingDeviceName = name
-    runArgv(["ember", "name", name])
+    runArgv(["omapuffco", "name", name])
     clearPendingTimer.restart()
   }
 
@@ -486,26 +486,26 @@ Panel {
 
   function finishSetup() {
     Util.execArgv(["xdg-terminal-exec", "bash", "-c",
-      "\"$1\"; echo; read -rp 'Press Enter to close'", "ember-setup", root.installScript])
+      "\"$1\"; echo; read -rp 'Press Enter to close'", "omapuffco-setup", root.installScript])
   }
 
   function connectDevice() {
     if (connecting) return
     connecting = true
     connectGiveUp.restart()
-    run("ember connect")
+    run("omapuffco connect")
   }
 
   function toggleStealth() {
     var next = !stealthOn
     pendingStealth = next
-    run("ember stealth " + (next ? "on" : "off"))
+    run("omapuffco stealth " + (next ? "on" : "off"))
   }
 
   function toggleLantern() {
     var next = !lanternOn
     pendingLantern = next
-    run("ember lantern " + (next ? "on" : "off"))
+    run("omapuffco lantern " + (next ? "on" : "off"))
   }
 
   function setBrightness(value) {
@@ -515,7 +515,7 @@ Panel {
 
   function commitBrightness() {
     if (pendingBrightness < 0) return
-    runArgv(["ember", "brightness", String(pendingBrightness)])
+    runArgv(["omapuffco", "brightness", String(pendingBrightness)])
     clearPendingTimer.restart()
   }
 
@@ -642,7 +642,7 @@ Panel {
     for (var key in pendingTemps) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      runArgv(["ember", "profile", String(index), "--temp-f", String(Math.round(pendingTemps[key]))])
+      runArgv(["omapuffco", "profile", String(index), "--temp-f", String(Math.round(pendingTemps[key]))])
     }
   }
 
@@ -650,7 +650,7 @@ Panel {
     for (var key in pendingTimes) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      runArgv(["ember", "profile", String(index), "--time", String(Math.round(pendingTimes[key]))])
+      runArgv(["omapuffco", "profile", String(index), "--time", String(Math.round(pendingTimes[key]))])
     }
   }
 
@@ -695,7 +695,7 @@ Panel {
     for (var key in pendingNames) updated[key] = pendingNames[key]
     updated[index] = name
     pendingNames = updated
-    runArgv(["ember", "profile", String(index), "--name", name])
+    runArgv(["omapuffco", "profile", String(index), "--name", name])
     clearPendingTimer.restart()
   }
 
@@ -721,7 +721,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["bash", "-lc", "ember --json status"]
+    command: ["bash", "-lc", "omapuffco --json status"]
     onRunningChanged: {
       if (running) {
         stallTimer.restart()
@@ -761,7 +761,7 @@ Panel {
     }
   }
 
-  // `ember --json status` waits on the daemon RPC; give up past that so a
+  // `omapuffco --json status` waits on the daemon RPC; give up past that so a
   // stalled BLE call can't wedge the panel (a running Process can't be
   // re-run) and let the next poll retry.
   Timer {
@@ -832,7 +832,7 @@ Panel {
   }
 
   FileView {
-    path: Quickshell.env("HOME") + "/.config/ember/config.json"
+    path: Quickshell.env("HOME") + "/.config/omapuffco/config.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -951,7 +951,7 @@ Panel {
               horizontalAlignment: Text.AlignHCenter
               wrapMode: Text.WordWrap
               text: root.needsSetup
-                ? "Ember's background service isn't set up yet. Setup opens a terminal and installs it for your user; no root access is needed."
+                ? "OmaPuffco's background service isn't set up yet. Setup opens a terminal and installs it for your user; no root access is needed."
                 : "Wake the Peak and keep it close to this computer. Disconnect the phone app first; the device accepts one connection at a time."
               color: root.dim
               font.family: root.fontFamily
@@ -979,14 +979,14 @@ Panel {
                 glyph: "\uf04b"
                 tint: Color.accent
                 emphasized: !root.heating
-                onActivated: root.run("ember heat start")
+                onActivated: root.run("omapuffco heat start")
               }
 
               ActionButton {
                 width: actionRow.cellWidth
                 label: "Boost"
                 glyph: "\uf0e7"
-                onActivated: root.run("ember heat boost")
+                onActivated: root.run("omapuffco heat boost")
               }
 
               ActionButton {
@@ -995,7 +995,7 @@ Panel {
                 glyph: "\uf04d"
                 tint: root.urgent
                 emphasized: root.heating || root.cooling
-                onActivated: root.run("ember heat stop")
+                onActivated: root.run("omapuffco heat stop")
               }
             }
 
@@ -1071,7 +1071,7 @@ Panel {
                       cursorShape: Qt.PointingHandCursor
                       onClicked: {
                         if (tile.profileIndex < 0) return
-                        root.runArgv(["ember", "profile", String(tile.profileIndex)])
+                        root.runArgv(["omapuffco", "profile", String(tile.profileIndex)])
                       }
                     }
 
@@ -1871,12 +1871,12 @@ Panel {
                 ActionButton {
                   width: (parent.width - parent.spacing) / 2
                   label: "Battery level"
-                  onActivated: root.run("ember battery")
+                  onActivated: root.run("omapuffco battery")
                 }
                 ActionButton {
                   width: (parent.width - parent.spacing) / 2
                   label: "Firmware version"
-                  onActivated: root.run("ember version")
+                  onActivated: root.run("omapuffco version")
                 }
               }
             }
@@ -1892,7 +1892,7 @@ Panel {
                   width: (parent.width - parent.spacing) / 2
                   label: "Sleep"
                   glyph: "\uf186"
-                  onActivated: root.run("ember sleep")
+                  onActivated: root.run("omapuffco sleep")
                 }
                 ActionButton {
                   width: (parent.width - parent.spacing) / 2
@@ -1918,7 +1918,7 @@ Panel {
         onCanceled: root.confirmPowerOff = false
         onConfirmed: {
           root.confirmPowerOff = false
-          root.run("ember off")
+          root.run("omapuffco off")
         }
       }
     }

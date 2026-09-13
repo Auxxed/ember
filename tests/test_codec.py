@@ -1,4 +1,4 @@
-from ember.codec import (
+from omapuffco.codec import (
     decode_puffco_json,
     first_color,
     hexify,

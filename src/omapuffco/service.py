@@ -1,4 +1,4 @@
-"""Start the Ember daemon if it is not already listening."""
+"""Start the OmaPuffco daemon if it is not already listening."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def ensure_daemon(timeout: float = 8.0) -> None:
     env["PYTHONPATH"] = src if not existing else f"{src}:{existing}"
     handle = open(log, "ab", buffering=0)
     subprocess.Popen(
-        [python_executable(), "-m", "ember.daemon"],
+        [python_executable(), "-m", "omapuffco.daemon"],
         cwd=str(project_root()),
         stdout=handle,
         stderr=subprocess.STDOUT,
@@ -68,5 +68,5 @@ def ensure_daemon(timeout: float = 8.0) -> None:
             return
         time.sleep(0.1)
     raise RuntimeError(
-        f"Ember daemon did not start. Check {log}"
+        f"OmaPuffco daemon did not start. Check {log}"
     )

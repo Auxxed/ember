@@ -5,7 +5,7 @@ import qs.Commons
 
 BarWidget {
   id: root
-  moduleName: "auxxed.ember"
+  moduleName: "auxxed.omapuffco"
 
   property string outputText: ""
   property string outputTooltip: ""
@@ -60,7 +60,7 @@ BarWidget {
   }
 
   IpcHandler {
-    target: "auxxed.ember"
+    target: "auxxed.omapuffco"
 
     function refresh(): void { root.broadcast("refresh") }
     function open(): void { root.open() }
@@ -75,20 +75,20 @@ BarWidget {
   implicitHeight: button.implicitHeight
 
   // Goes through a login shell, same as bar.run()/execDetached and the
-  // built-in custom-command module, so it finds `ember` on PATH regardless
+  // built-in custom-command module, so it finds `omapuffco` on PATH regardless
   // of how omarchy-shell itself was launched.
   Process {
     id: proc
-    command: ["bash", "-lc", "ember waybar"]
-    // No output means `ember` is missing or its daemon is down; stay visible
+    command: ["bash", "-lc", "omapuffco waybar"]
+    // No output means `omapuffco` is missing or its daemon is down; stay visible
     // so the panel's Finish setup is reachable instead of vanishing.
     onExited: function(exitCode) {
       if (exitCode === 0 || root.stalled) {
         root.stalled = false
         return
       }
-      root.outputText = "Ember"
-      root.outputTooltip = "Ember needs setup — click to finish"
+      root.outputText = "OmaPuffco"
+      root.outputTooltip = "OmaPuffco needs setup — click to finish"
       root.outputActive = false
       root.outputOffline = true
     }
@@ -110,7 +110,7 @@ BarWidget {
         } catch (e) {
           return
         }
-        // `ember waybar` pads its idle label with a double space, a waybar
+        // `omapuffco waybar` pads its idle label with a double space, a waybar
         // convention for separating two fields. The Omarchy bar already gaps
         // its widgets, so that reads as two widgets here — collapse it.
         root.outputText = String(data.text || "").replace(/\s+/g, " ").trim()
@@ -121,7 +121,7 @@ BarWidget {
     }
   }
 
-  // `ember waybar` waits up to 5s on the daemon RPC; give up past that so a
+  // `omapuffco waybar` waits up to 5s on the daemon RPC; give up past that so a
   // stalled BLE call can't wedge the widget (a running Process can't be
   // re-run) and let the next poll retry.
   Timer {
@@ -158,7 +158,7 @@ BarWidget {
 
     onPressed: function(b) {
       if (b === Qt.RightButton) {
-        if (root.bar) root.bar.run("ember heat start")
+        if (root.bar) root.bar.run("omapuffco heat start")
       } else if (b === Qt.MiddleButton) {
         root.broadcast("refresh")
       } else {

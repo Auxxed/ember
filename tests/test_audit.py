@@ -1,7 +1,7 @@
 import struct
 import time
 
-from ember import audit, history
+from omapuffco import audit, history
 
 NOW = 1_800_000_000.0
 

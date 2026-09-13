@@ -1,5 +1,5 @@
-from ember.constants import BatteryChargeSource, CHARGE_SOURCE_LABELS
-from ember.utils import PuffcoUtils
+from omapuffco.constants import BatteryChargeSource, CHARGE_SOURCE_LABELS
+from omapuffco.utils import PuffcoUtils
 
 
 class TestTemperature:
