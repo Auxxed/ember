@@ -10,7 +10,18 @@ OmaPuffco is unofficial and not affiliated with Puffco. It speaks the
 reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
 break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
-![OmaPuffco panel](preview.png)
+<table>
+  <tr>
+    <td align="center"><img src="preview.png" width="270" alt="Control tab: heat, profiles, vapor and boost"><br><sub>Control</sub></td>
+    <td align="center"><img src="screenshots/lights.png" width="270" alt="Lights tab: LED, brightness, stealth and profile colour"><br><sub>Lights</sub></td>
+    <td align="center"><img src="screenshots/care.png" width="270" alt="Care tab: battery, cleaning and goals"><br><sub>Care</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="screenshots/usage-stats.png" width="270" alt="Usage stats: counts, daily chart and habits"><br><sub>Usage · Stats</sub></td>
+    <td align="center"><img src="screenshots/usage-history.png" width="270" alt="Usage history: every dab with notes"><br><sub>Usage · History</sub></td>
+    <td align="center"><img src="screenshots/device.png" width="270" alt="Device tab: name, battery health, firmware and fault log"><br><sub>Device</sub></td>
+  </tr>
+</table>
 
 ## Supported devices
 
@@ -81,7 +92,8 @@ removal.
 
 ## Using it
 
-- **Bar** — chamber temperature and battery, with ⚡ while plugged in.
+- **Bar** — chamber temperature and battery, with ⚡ while plugged in. While
+  battery saver rests the Peak, it keeps showing the last battery reading.
   Left-click opens the panel, right-click starts a heat cycle, middle-click
   refreshes.
 - **Control** — Heat, Boost and Stop, with a countdown ring while the Peak
@@ -173,6 +185,7 @@ omapuffco lantern on
 omapuffco brightness 160
 omapuffco color '#ff6a1a' --index 0  # a profile's LED color
 omapuffco stealth on
+omapuffco battery                  # show the charge on the Peak's own lights
 omapuffco preserve on              # stop charging at 80% (off: charge to 100%)
 omapuffco saver on                 # rest the Peak after sessions and 10 min idle
 omapuffco clean --every 30         # remind after N dabs (10–100)
@@ -214,8 +227,10 @@ Keep virtual environments outside the checkout: `omarchy plugin` refuses
 symlinks inside a plugin folder, and a venv is full of them.
 
 The tests cover the CBOR and color codec, audit-log decoding, dab-history date
-maths, config and profile limits, the daemon liveness probe, and the plugin
-manifest. The Bluetooth layer needs real hardware, so it's exercised by hand.
+maths, config and profile limits, battery saver resting and waking, the command
+queue, notifications and goals, `omapuffco doctor`, the CLI parser, the daemon
+liveness probe, and the plugin manifest. The Bluetooth layer itself needs real
+hardware, so it's exercised by hand against a Peak Pro.
 
 Protocol work builds on [Fr0st3h/PuffcoBLE](https://github.com/Fr0st3h/PuffcoBLE)
 and the [OldGrowthCrypto Linux/BlueZ fork](https://github.com/OldGrowthCrypto/Puffco);

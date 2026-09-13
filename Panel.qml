@@ -1969,7 +1969,7 @@ Panel {
 
               SwitchRow {
                 width: parent.width
-                label: "Sleep after sessions and 10 min idle"
+                label: "Rest after sessions and 10 min idle"
                 checked: root.saverOn
                 onToggled: root.toggleSaver()
               }
