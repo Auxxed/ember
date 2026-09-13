@@ -10,6 +10,11 @@ QuickPuff is unofficial and not affiliated with Puffco. It speaks the
 reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
 break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
+<p align="center">
+  <img src="screenshots/demo.gif" width="376" alt="Starting a heat cycle in the QuickPuff panel: heating up, ready, and the session countdown"><br>
+  <sub><a href="https://github.com/Auxxed/quickpuff/releases/download/v0.5.1/quickpuff-demo.mp4">Watch the full 3-minute demo (MP4, 5 MB)</a></sub>
+</p>
+
 <table>
   <tr>
     <td align="center"><img src="preview.png" width="270" alt="Control tab: heat, profiles, vapor and boost"><br><sub>Control</sub></td>
