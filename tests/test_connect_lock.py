@@ -5,7 +5,7 @@ from omapuffco.daemon import OmaPuffcoDaemon
 
 class FakePeak:
     is_connected = True
-    address = "F0:AD:4E:38:6E:3C"
+    address = "AA:BB:CC:11:22:33"
     device_mac = None
 
 
@@ -38,7 +38,7 @@ def test_connects_never_overlap(tmp_path):
 def test_already_connected_to_the_same_peak_is_a_no_op(tmp_path):
     d = daemon(tmp_path)
     d.device = FakePeak()
-    assert asyncio.run(d._connect_unlocked(None, "f0:ad:4e:38:6e:3c")) is d.status
+    assert asyncio.run(d._connect_unlocked(None, "aa:bb:cc:11:22:33")) is d.status
     assert asyncio.run(d._connect_unlocked(None, None)) is d.status
 
 

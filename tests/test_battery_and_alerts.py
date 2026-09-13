@@ -87,7 +87,7 @@ def test_low_battery_notification_can_be_turned_off(tmp_path):
 
 
 def test_restart_reconnects_to_the_last_peak(tmp_path):
-    save_config({**load_config(), "device_mac": "F0:AD:4E:38:6E:3C", "device_name": "Delly"})
+    save_config({**load_config(), "device_mac": "AA:BB:CC:11:22:33", "device_name": "Delly"})
     d = daemon(tmp_path)
 
     async def run():
@@ -99,7 +99,7 @@ def test_restart_reconnects_to_the_last_peak(tmp_path):
 
 
 def test_disconnect_keeps_it_disconnected_after_a_restart(tmp_path):
-    save_config({**load_config(), "device_mac": "F0:AD:4E:38:6E:3C"})
+    save_config({**load_config(), "device_mac": "AA:BB:CC:11:22:33"})
     d = daemon(tmp_path)
     asyncio.run(d._disconnect(forget=True))
     assert load_config()["auto_connect"] is False

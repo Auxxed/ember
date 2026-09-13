@@ -31,7 +31,7 @@ def test_widget_states():
 
 
 def test_unpaired_peak_gets_pairing_instructions():
-    cfg = {"device_mac": "F0:AD:4E:38:6E:3C", "device_name": "Peak Pro"}
+    cfg = {"device_mac": "AA:BB:CC:11:22:33", "device_name": "Peak Pro"}
     check = doctor.check_saved_peak(cfg, paired=False)
     assert check.ok is False and "glows blue" in check.fix
     assert doctor.check_saved_peak(cfg, paired=True).ok
