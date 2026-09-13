@@ -23,7 +23,7 @@ from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
 
-log = logging.getLogger("omapuffco.daemon")
+log = logging.getLogger("quickpuff.daemon")
 
 # Notify once when the battery falls to this, and again only after it
 # recovers past the re-arm level (or the Peak is plugged in).
@@ -203,7 +203,7 @@ def _validate_index(args: dict) -> int:
     return index
 
 
-class OmaPuffcoDaemon:
+class QuickPuffDaemon:
     def __init__(self, sock: Path, debug: bool = False):
         self.socket_path = sock
         self.debug = debug
@@ -512,7 +512,7 @@ class OmaPuffcoDaemon:
         if is_proxy(snap.get("product")):
             await ble.disconnect()
             self.device = None
-            raise RuntimeError("That device is a Proxy/Pivot. OmaPuffco only talks to Peak Pro.")
+            raise RuntimeError("That device is a Proxy/Pivot. QuickPuff only talks to Peak Pro.")
         serial = str(snap.get("serial") or "")
         # Each Peak keeps its own usage and cleaning countdown, so pick this
         # Peak's before the snapshot records anything.
@@ -1028,7 +1028,7 @@ class OmaPuffcoDaemon:
         log.info("Notification: %s — %s", title, body)
         try:
             subprocess.Popen(
-                ["notify-send", "-a", "OmaPuffco", "-u", urgency, title, body],
+                ["notify-send", "-a", "QuickPuff", "-u", urgency, title, body],
                 start_new_session=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -1531,11 +1531,11 @@ class OmaPuffcoDaemon:
                     )
                     continue
                 # Outside the try: a client that stopped waiting (a killed
-                # `omapuffco waybar`, the panel's stall timer) isn't a failed
+                # `quickpuff waybar`, the panel's stall timer) isn't a failed
                 # command, and its ConnectionError ends this client quietly below.
                 await self._send(writer, {"id": req_id, "ok": True, "result": result})
         except (ConnectionError, asyncio.IncompleteReadError):
-            # The client went away mid-reply, e.g. a stalled `omapuffco waybar` that got killed.
+            # The client went away mid-reply, e.g. a stalled `quickpuff waybar` that got killed.
             pass
         finally:
             self.clients.discard(writer)
@@ -1614,7 +1614,7 @@ class OmaPuffcoDaemon:
 
 
 async def amain(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="OmaPuffco Peak Pro BLE daemon")
+    parser = argparse.ArgumentParser(description="QuickPuff Peak Pro BLE daemon")
     parser.add_argument("--socket", type=Path, default=socket_path())
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args(argv)
@@ -1624,7 +1624,7 @@ async def amain(argv: Optional[list[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    daemon = OmaPuffcoDaemon(args.socket, debug=args.debug)
+    daemon = QuickPuffDaemon(args.socket, debug=args.debug)
     await daemon.start()
 
     stop = asyncio.Event()

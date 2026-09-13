@@ -1,4 +1,4 @@
-from omapuffco.product_info import get_product_info, is_proxy
+from quickpuff.product_info import get_product_info, is_proxy
 
 
 class TestLookup:

@@ -1,8 +1,8 @@
 import cbor2
 import pytest
 
-from omapuffco.codec import hexify
-from omapuffco.lights import SINGLE_COLOR_OFFSETS, normalize_color, solid_color_payload
+from quickpuff.codec import hexify
+from quickpuff.lights import SINGLE_COLOR_OFFSETS, normalize_color, solid_color_payload
 
 
 def test_single_color_matches_the_official_no_animation_lamp():

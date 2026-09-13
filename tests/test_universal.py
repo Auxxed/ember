@@ -1,13 +1,13 @@
-"""Peak Pros other than the one OmaPuffco was built on: older firmware and models."""
+"""Peak Pros other than the one QuickPuff was built on: older firmware and models."""
 
 import asyncio
 import struct
 
-from omapuffco import audit
-from omapuffco.ble import LoraxError, PuffcoBLE
-from omapuffco.lights import rgbt_color, rgbt_to_hex
-from omapuffco.product_info import get_product_info
-from omapuffco.utils import PuffcoUtils
+from quickpuff import audit
+from quickpuff.ble import LoraxError, PuffcoBLE
+from quickpuff.lights import rgbt_color, rgbt_to_hex
+from quickpuff.product_info import get_product_info
+from quickpuff.utils import PuffcoUtils
 
 NOW = 1_800_000_000.0
 

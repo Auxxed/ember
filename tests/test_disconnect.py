@@ -1,10 +1,10 @@
 import asyncio
 
-from omapuffco.daemon import OmaPuffcoDaemon
+from quickpuff.daemon import QuickPuffDaemon
 
 
 def test_disconnect_cancels_a_pending_reconnect_and_stops_retrying(tmp_path):
-    daemon = OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    daemon = QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
     async def run() -> None:
         async def retry_forever() -> None:

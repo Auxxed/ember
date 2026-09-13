@@ -1,7 +1,7 @@
 import json
 import time
 
-from omapuffco import history
+from quickpuff import history
 
 
 def sessions(n, start_index=1):

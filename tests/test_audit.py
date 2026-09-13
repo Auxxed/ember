@@ -1,7 +1,7 @@
 import struct
 import time
 
-from omapuffco import audit, history
+from quickpuff import audit, history
 
 NOW = 1_800_000_000.0
 

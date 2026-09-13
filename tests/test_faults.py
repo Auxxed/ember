@@ -1,5 +1,5 @@
-from omapuffco import faults
-from omapuffco.audit import Entry
+from quickpuff import faults
+from quickpuff.audit import Entry
 
 NOW = 1_800_000_000.0
 

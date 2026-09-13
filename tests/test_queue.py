@@ -6,9 +6,9 @@ import json
 import logging
 import time
 
-from omapuffco import daemon as daemon_module
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.rpc import rpc
+from quickpuff import daemon as daemon_module
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.rpc import rpc
 
 
 class FakePeak:
@@ -40,7 +40,7 @@ class FakePeak:
 
 
 def make_daemon(tmp_path, peak=None):
-    d = OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    d = QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
     d.device = peak
     d.status["current_profile"] = 0
     d.status["profiles"] = [{"index": i, "temp_f": 500, "temp_c": 260.0, "color": "#000000"} for i in range(4)]
@@ -83,7 +83,7 @@ def test_a_client_that_gave_up_is_not_logged_as_a_failed_command(tmp_path, caplo
         reader = asyncio.StreamReader()
         reader.feed_data((json.dumps({"id": 1, "cmd": "set_daily_limit", "args": {"limit": 2}}) + "\n").encode())
         reader.feed_eof()
-        with caplog.at_level(logging.ERROR, logger="omapuffco.daemon"):
+        with caplog.at_level(logging.ERROR, logger="quickpuff.daemon"):
             await d._client(reader, GoneWriter())
 
     asyncio.run(run())

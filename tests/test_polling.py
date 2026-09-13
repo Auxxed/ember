@@ -2,13 +2,13 @@
 
 import asyncio
 
-from omapuffco import daemon as daemon_module
-from omapuffco.constants import OperatingState
-from omapuffco.daemon import (
+from quickpuff import daemon as daemon_module
+from quickpuff.constants import OperatingState
+from quickpuff.daemon import (
     FULL_SNAPSHOT_EVERY_S,
     IDLE_POLL_S,
     IDLE_SLEEP_S,
-    OmaPuffcoDaemon,
+    QuickPuffDaemon,
     idle_sleep_due,
     poll_delay,
     snapshot_kind,
@@ -20,7 +20,7 @@ FADE = int(OperatingState.HEAT_CYCLE_FADE)
 
 
 def make_daemon(tmp_path):
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 def test_poll_speed_follows_what_the_peak_is_doing():

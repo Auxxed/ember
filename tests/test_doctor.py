@@ -1,10 +1,10 @@
-from omapuffco import doctor
+from quickpuff import doctor
 
 
 def test_stale_daemon_after_an_update_is_flagged():
     check = doctor.check_daemon("0.3.1", installed="0.3.2")
     assert check.ok is False
-    assert "restart omapuffco-daemon" in check.fix
+    assert "restart quickpuff-daemon" in check.fix
     assert doctor.check_daemon("0.3.2", installed="0.3.2").ok is True
     assert doctor.check_daemon(None).ok is False
 

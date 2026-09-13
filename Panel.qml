@@ -6,8 +6,8 @@ import qs.Commons
 
 Panel {
   id: root
-  moduleName: "auxxed.omapuffco"
-  ipcTarget: "auxxed.omapuffco"
+  moduleName: "auxxed.quickpuff"
+  ipcTarget: "auxxed.quickpuff"
   manageIpc: false
 
   property var anchorItem: null
@@ -107,7 +107,7 @@ Panel {
     return null
   }
 
-  // OperatingState ids from omapuffco's constants.py: 7 preheat, 8 at-temp, 9 fade.
+  // OperatingState ids from quickpuff's constants.py: 7 preheat, 8 at-temp, 9 fade.
   readonly property int stateId: {
     var n = Number(statusData.operating_state_id)
     return isFinite(n) ? n : -1
@@ -117,7 +117,7 @@ Panel {
   readonly property bool cooling: connected && stateId === 9
   readonly property bool heating: preheating || atTemp
 
-  // `omapuffco` stores the user's unit preference in its own config; the bar label
+  // `quickpuff` stores the user's unit preference in its own config; the bar label
   // already honors it, so the panel has to as well or the two disagree.
   property string units: "F"
   readonly property bool celsius: units === "C"
@@ -188,7 +188,7 @@ Panel {
     var raw = statusData.battery_capacity_mah
     var mah = Number(raw)
     if (!connected || !raw || !isFinite(mah)) return ""
-    // Use the daemon's figure so the panel and `omapuffco status` agree.
+    // Use the daemon's figure so the panel and `quickpuff status` agree.
     var daemonPct = Number(statusData.battery_health_pct)
     if (statusData.battery_health_pct !== null && isFinite(daemonPct)) return daemonPct + "%"
     return Math.min(100, Math.floor(mah / batteryRated * 100 + 0.5)) + "%"
@@ -209,7 +209,7 @@ Panel {
   function togglePreserve() {
     var next = !preserveOn
     pendingPreserve = next
-    run("omapuffco preserve " + (next ? "on" : "off"))
+    run("quickpuff preserve " + (next ? "on" : "off"))
   }
 
   // The Peak refuses to heat near 5%; warn a little before that.
@@ -352,7 +352,7 @@ Panel {
   readonly property string connectMessage: connectError !== ""
     ? connectError
     : (connectFailed ? "Couldn't connect. Wake the Peak, keep it close, and try again." : "")
-  // Set when `omapuffco` isn't installed or its daemon isn't running, e.g. right
+  // Set when `quickpuff` isn't installed or its daemon isn't running, e.g. right
   // after `omarchy plugin add` without install.sh.
   property bool needsSetup: false
   readonly property string installScript: Qt.resolvedUrl("install.sh").toString().replace(/^file:\/\//, "")
@@ -410,19 +410,19 @@ Panel {
   function stepDailyLimit(delta) {
     var next = Math.max(0, Math.min(50, dailyLimit + delta))
     pendingDailyLimit = next
-    run("omapuffco limit " + next)
+    run("quickpuff limit " + next)
   }
 
   function toggleRecap() {
     var next = !recapOn
     pendingRecap = next
-    run("omapuffco recap " + (next ? "on" : "off"))
+    run("quickpuff recap " + (next ? "on" : "off"))
   }
 
   function loadSessions() {
     if (sessionsProc.running) return
     sessionsLoading = true
-    sessionsProc.command = ["bash", "-lc", "omapuffco --json sessions --limit \"$1\"", "omapuffco-sessions", String(sessionLimit)]
+    sessionsProc.command = ["bash", "-lc", "quickpuff --json sessions --limit \"$1\"", "quickpuff-sessions", String(sessionLimit)]
     sessionsProc.running = true
   }
 
@@ -447,7 +447,7 @@ Panel {
     copy[key] = text
     pendingNotes = copy
     closeNote(key)
-    runArgv(text === "" ? ["omapuffco", "note", key] : ["omapuffco", "note", key, text])
+    runArgv(text === "" ? ["quickpuff", "note", key] : ["quickpuff", "note", key, text])
     noteReload.restart()
   }
 
@@ -500,7 +500,7 @@ Panel {
     pendingColors = updated
     // Also paints the live lantern, without reselecting the heat profile
     // (which flashes factory green over the new colour).
-    runArgv(["omapuffco", "color", hex, "--index", String(currentProfile)])
+    runArgv(["quickpuff", "color", hex, "--index", String(currentProfile)])
     clearPendingTimer.restart()
   }
 
@@ -523,7 +523,7 @@ Panel {
     for (var key in pendingVapors) updated[key] = pendingVapors[key]
     updated[currentProfile] = name
     pendingVapors = updated
-    runArgv(["omapuffco", "profile", String(currentProfile), "--vapor", name])
+    runArgv(["quickpuff", "profile", String(currentProfile), "--vapor", name])
     clearPendingTimer.restart()
   }
 
@@ -602,7 +602,7 @@ Panel {
     for (key in seen) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      var args = ["omapuffco", "profile", String(index)]
+      var args = ["quickpuff", "profile", String(index)]
       if (pendingBoostTemps[key] !== undefined)
         args.push("--boost-temp", String(Math.round(pendingBoostTemps[key])))
       if (pendingBoostTimes[key] !== undefined)
@@ -621,7 +621,7 @@ Panel {
     cancelEdit()
     if (name === "") return
     pendingDeviceName = name
-    runArgv(["omapuffco", "name", name])
+    runArgv(["quickpuff", "name", name])
     clearPendingTimer.restart()
   }
 
@@ -664,7 +664,7 @@ Panel {
 
   function finishSetup() {
     Util.execArgv(["xdg-terminal-exec", "bash", "-c",
-      "\"$1\"; echo; read -rp 'Press Enter to close'", "omapuffco-setup", root.installScript])
+      "\"$1\"; echo; read -rp 'Press Enter to close'", "quickpuff-setup", root.installScript])
   }
 
   function readFaults() {
@@ -700,8 +700,8 @@ Panel {
     connectFailed = false
     connectGiveUp.restart()
     connectProc.command = mac
-      ? ["bash", "-lc", "omapuffco connect --mac \"$1\"", "omapuffco-connect", String(mac)]
-      : ["bash", "-lc", "omapuffco connect"]
+      ? ["bash", "-lc", "quickpuff connect --mac \"$1\"", "quickpuff-connect", String(mac)]
+      : ["bash", "-lc", "quickpuff connect"]
     connectProc.running = true
   }
 
@@ -717,32 +717,32 @@ Panel {
   function disconnectDevice() {
     connecting = false
     connectGiveUp.stop()
-    run("omapuffco disconnect")
+    run("quickpuff disconnect")
   }
 
   function toggleStealth() {
     var next = !stealthOn
     pendingStealth = next
-    run("omapuffco stealth " + (next ? "on" : "off"))
+    run("quickpuff stealth " + (next ? "on" : "off"))
   }
 
   function toggleLantern() {
     var next = !lanternOn
     pendingLantern = next
-    run("omapuffco lantern " + (next ? "on" : "off"))
+    run("quickpuff lantern " + (next ? "on" : "off"))
   }
 
   function toggleQtip() {
     var next = !qtipOn
     pendingQtip = next
-    run("omapuffco qtip " + (next ? "on" : "off"))
+    run("quickpuff qtip " + (next ? "on" : "off"))
   }
 
   function toggleSaver() {
     var next = !saverOn
     pendingSaver = next
     if (next) pendingLantern = false
-    run("omapuffco saver " + (next ? "on" : "off"))
+    run("quickpuff saver " + (next ? "on" : "off"))
   }
 
   function clampCleanEvery(value) {
@@ -762,7 +762,7 @@ Panel {
 
   function markCleaned() {
     pendingCleanEvery = -1
-    run("omapuffco clean done")
+    run("quickpuff clean done")
   }
 
   function setBrightness(value) {
@@ -772,7 +772,7 @@ Panel {
 
   function commitBrightness() {
     if (pendingBrightness < 0) return
-    runArgv(["omapuffco", "brightness", String(pendingBrightness)])
+    runArgv(["quickpuff", "brightness", String(pendingBrightness)])
     clearPendingTimer.restart()
   }
 
@@ -899,7 +899,7 @@ Panel {
     for (var key in pendingTemps) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      runArgv(["omapuffco", "profile", String(index), "--temp-f", String(Math.round(pendingTemps[key]))])
+      runArgv(["quickpuff", "profile", String(index), "--temp-f", String(Math.round(pendingTemps[key]))])
     }
   }
 
@@ -907,7 +907,7 @@ Panel {
     for (var key in pendingTimes) {
       var index = Math.round(Number(key))
       if (!isFinite(index) || index < 0) continue
-      runArgv(["omapuffco", "profile", String(index), "--time", String(Math.round(pendingTimes[key]))])
+      runArgv(["quickpuff", "profile", String(index), "--time", String(Math.round(pendingTimes[key]))])
     }
   }
 
@@ -916,7 +916,7 @@ Panel {
     commitTimes()
     commitBoost()
     if (pendingCleanEvery >= 0)
-      runArgv(["omapuffco", "clean", "--every", String(pendingCleanEvery)])
+      runArgv(["quickpuff", "clean", "--every", String(pendingCleanEvery)])
     clearPendingTimer.restart()
   }
 
@@ -954,7 +954,7 @@ Panel {
     for (var key in pendingNames) updated[key] = pendingNames[key]
     updated[index] = name
     pendingNames = updated
-    runArgv(["omapuffco", "profile", String(index), "--name", name])
+    runArgv(["quickpuff", "profile", String(index), "--name", name])
     clearPendingTimer.restart()
   }
 
@@ -980,7 +980,7 @@ Panel {
 
   Process {
     id: statusProc
-    command: ["bash", "-lc", "omapuffco --json status"]
+    command: ["bash", "-lc", "quickpuff --json status"]
     onRunningChanged: {
       if (running) {
         stallTimer.restart()
@@ -1025,7 +1025,7 @@ Panel {
     }
   }
 
-  // `omapuffco --json status` waits on the daemon RPC; give up past that so a
+  // `quickpuff --json status` waits on the daemon RPC; give up past that so a
   // stalled BLE call can't wedge the panel (a running Process can't be
   // re-run) and let the next poll retry.
   Timer {
@@ -1058,7 +1058,7 @@ Panel {
 
   Process {
     id: connectProc
-    command: ["bash", "-lc", "omapuffco connect"]
+    command: ["bash", "-lc", "quickpuff connect"]
     onExited: function(exitCode) {
       root.connecting = false
       connectGiveUp.stop()
@@ -1084,7 +1084,7 @@ Panel {
 
   Process {
     id: sessionsProc
-    command: ["bash", "-lc", "omapuffco --json sessions --limit 30"]
+    command: ["bash", "-lc", "quickpuff --json sessions --limit 30"]
     onExited: function(exitCode) {
       root.sessionsLoading = false
       if (exitCode !== 0 && root.sessionList === null) root.sessionList = []
@@ -1113,7 +1113,7 @@ Panel {
 
   Process {
     id: scanProc
-    command: ["bash", "-lc", "omapuffco --json scan --timeout 8"]
+    command: ["bash", "-lc", "quickpuff --json scan --timeout 8"]
     onExited: function(exitCode) {
       root.scanning = false
       if (exitCode !== 0 && root.nearbyPeaks === null) root.nearbyPeaks = []
@@ -1172,7 +1172,7 @@ Panel {
 
   Process {
     id: faultProc
-    command: ["bash", "-lc", "omapuffco --json faults"]
+    command: ["bash", "-lc", "quickpuff --json faults"]
     onExited: function(exitCode) {
       root.faultsLoading = false
       if (exitCode !== 0) root.faultError = true
@@ -1199,7 +1199,7 @@ Panel {
   }
 
   FileView {
-    path: Quickshell.env("HOME") + "/.config/omapuffco/config.json"
+    path: Quickshell.env("HOME") + "/.config/quickpuff/config.json"
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -1361,7 +1361,7 @@ Panel {
               horizontalAlignment: Text.AlignHCenter
               wrapMode: Text.WordWrap
               text: root.needsSetup
-                ? "OmaPuffco's background service isn't set up yet. Setup opens a terminal and installs it for your user; no root access is needed."
+                ? "QuickPuff's background service isn't set up yet. Setup opens a terminal and installs it for your user; no root access is needed."
                 : root.resting
                   ? "Battery saver let the Peak rest to save its battery. Reconnecting now…"
                   : "Wake the Peak and keep it close to this computer. Disconnect the phone app first; the device accepts one connection at a time."
@@ -1391,14 +1391,14 @@ Panel {
                 glyph: "\uf04b"
                 tint: Color.accent
                 emphasized: !root.heating
-                onActivated: root.run("omapuffco heat start")
+                onActivated: root.run("quickpuff heat start")
               }
 
               ActionButton {
                 width: actionRow.cellWidth
                 label: "Boost"
                 glyph: "\uf0e7"
-                onActivated: root.run("omapuffco heat boost")
+                onActivated: root.run("quickpuff heat boost")
               }
 
               ActionButton {
@@ -1407,7 +1407,7 @@ Panel {
                 glyph: "\uf04d"
                 tint: root.urgent
                 emphasized: root.heating || root.cooling
-                onActivated: root.run("omapuffco heat stop")
+                onActivated: root.run("quickpuff heat stop")
               }
             }
 
@@ -1550,7 +1550,7 @@ Panel {
                       cursorShape: Qt.PointingHandCursor
                       onClicked: {
                         if (tile.profileIndex < 0) return
-                        root.runArgv(["omapuffco", "profile", String(tile.profileIndex)])
+                        root.runArgv(["quickpuff", "profile", String(tile.profileIndex)])
                       }
                     }
 
@@ -2566,7 +2566,7 @@ Panel {
               ActionButton {
                 width: parent.width
                 label: "Battery level"
-                onActivated: root.run("omapuffco battery")
+                onActivated: root.run("quickpuff battery")
               }
             }
 
@@ -2689,7 +2689,7 @@ Panel {
         onCanceled: root.confirmPowerOff = false
         onConfirmed: {
           root.confirmPowerOff = false
-          root.run("omapuffco off")
+          root.run("quickpuff off")
         }
       }
     }

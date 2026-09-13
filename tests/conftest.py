@@ -19,8 +19,8 @@ def isolated_xdg(tmp_path, monkeypatch):
         target = tmp_path / sub
         target.mkdir()
         monkeypatch.setenv(name, str(target))
-    monkeypatch.delenv("OMAPUFFCO_SOCKET", raising=False)
-    from omapuffco import history
+    monkeypatch.delenv("QUICKPUFF_SOCKET", raising=False)
+    from quickpuff import history
 
     history.use_device(None)
     return tmp_path

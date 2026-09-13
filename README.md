@@ -1,12 +1,12 @@
-# OmaPuffco
+# QuickPuff
 
-[![tests](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml)
+[![tests](https://github.com/Auxxed/quickpuff/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/quickpuff/actions/workflows/tests.yml)
 
 Puffco Peak Pro controls for the [Omarchy](https://omarchy.org/) bar: chamber
 temperature and battery at a glance, heat and profile controls, LED colors,
 and usage stats read straight from the device.
 
-OmaPuffco is unofficial and not affiliated with Puffco. It speaks the
+QuickPuff is unofficial and not affiliated with Puffco. It speaks the
 reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
 break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
@@ -27,32 +27,32 @@ break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
 - **Puffco Peak Pro**, every colorway. Heat control, profiles, battery, usage,
   the fault log and LED colours all work across Peak Pro firmware versions.
-  Firmware before AF stores LED colours in an older format; OmaPuffco writes
+  Firmware before AF stores LED colours in an older format; QuickPuff writes
   that format the way the Puffco app does, but it has only been tested on
   newer firmware so far.
 - Firmware from before Puffco's current Bluetooth protocol can't connect.
   Update it once in the Puffco app.
 - More than one Peak nearby (or a friend's): choose it with **Find nearby
-  Peaks** in the panel, or run `omapuffco scan` and then
-  `omapuffco connect --mac AA:BB:...`.
+  Peaks** in the panel, or run `quickpuff scan` and then
+  `quickpuff connect --mac AA:BB:...`.
 - Any Bluetooth adapter BlueZ supports (see [Bluetooth adapter](#bluetooth-adapter)).
 - The Puffco Proxy and Pivot are not supported.
 
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/Auxxed/omapuffco --enable && ~/.config/omarchy/plugins/auxxed.omapuffco/install.sh
+omarchy plugin add https://github.com/Auxxed/quickpuff --enable && ~/.config/omarchy/plugins/auxxed.quickpuff/install.sh
 ```
 
 `omarchy plugin add` installs the bar widget. `install.sh` sets up what the
 widget needs, all inside your home directory with no root access:
 
-- a Python environment in `~/.local/share/omapuffco/venv` with the Bluetooth
+- a Python environment in `~/.local/share/quickpuff/venv` with the Bluetooth
   libraries from PyPI: [`bleak`](https://pypi.org/project/bleak/),
   [`cbor2`](https://pypi.org/project/cbor2/) and
   [`dbus-fast`](https://pypi.org/project/dbus-fast/)
-- the `omapuffco` command in `~/.local/bin`
-- the `omapuffco-daemon` systemd user service, which holds the one Bluetooth
+- the `quickpuff` command in `~/.local/bin`
+- the `quickpuff-daemon` systemd user service, which holds the one Bluetooth
   connection the widget and the command share
 
 If you add the plugin without running `install.sh`, the widget shows
@@ -62,32 +62,35 @@ Requirements: Python 3.10 or newer, BlueZ, and systemd — all present on a
 standard Omarchy install.
 
 Then wake the Peak, keep it near the computer, and disconnect the Puffco phone
-app (the Peak accepts one connection at a time). Click the OmaPuffco widget and
+app (the Peak accepts one connection at a time). Click the QuickPuff widget and
 choose **Connect**.
 
-If something doesn't work, run `omapuffco doctor`. It checks Bluetooth, the
+If something doesn't work, run `quickpuff doctor`. It checks Bluetooth, the
 background daemon, the bar widget and your Peak, and prints the command that
 fixes anything it finds.
 
 ## Update
 
 ```bash
-omarchy plugin update auxxed.omapuffco && ~/.config/omarchy/plugins/auxxed.omapuffco/install.sh
+omarchy plugin update auxxed.quickpuff && ~/.config/omarchy/plugins/auxxed.quickpuff/install.sh
 ```
 
-Used this back when it was called Ember? Run the install line above.
+Used this back when it was called OmaPuffco or Ember? Remove the old plugin with
+`omarchy plugin remove auxxed.omapuffco --yes` (or `auxxed.ember`), then run the
+install line above. `install.sh` stops the old daemon and carries your settings
+and dab history across.
 `install.sh` moves your settings and dab history across and swaps the old
 widget out, keeping its place in the bar.
 
 ## Remove
 
 ```bash
-~/.config/omarchy/plugins/auxxed.omapuffco/uninstall.sh
+~/.config/omarchy/plugins/auxxed.quickpuff/uninstall.sh
 ```
 
-This stops the daemon, removes the `omapuffco` command and the Python environment,
-and removes the plugin. Your dab history (`~/.local/share/omapuffco/dabs.json`) and
-settings (`~/.config/omapuffco`) are kept; delete those folders too for a clean
+This stops the daemon, removes the `quickpuff` command and the Python environment,
+and removes the plugin. Your dab history (`~/.local/share/quickpuff/dabs.json`) and
+settings (`~/.config/quickpuff`) are kept; delete those folders too for a clean
 removal.
 
 ## Using it
@@ -122,29 +125,29 @@ removal.
 
 ### Notifications and reconnecting
 
-OmaPuffco sends a desktop notification when the Peak reaches temperature, once
+QuickPuff sends a desktop notification when the Peak reaches temperature, once
 when the battery drops to 15% (again only after it recovers or charges), and
 when the chamber is due a clean. After each session that reached temperature
 it reminds you to Q-tip the chamber while it's still warm; switch that off under
-Care or with `omapuffco qtip off`. If you set a daily limit, it notifies once
+Care or with `quickpuff qtip off`. If you set a daily limit, it notifies once
 the day you reach it, and every Sunday evening it sends a weekly recap (how
 many sessions, your most-used profile, and how that compares with the week
 before); both live under Care → Goals. Turn the ready and low-battery alerts off with
 `"notify_ready": false` or `"notify_low_battery": false` in
-`~/.config/omapuffco/config.json`.
+`~/.config/quickpuff/config.json`.
 
 After a restart or reboot the daemon reconnects to the last Peak on its own.
-Pressing Disconnect (or `omapuffco disconnect`) stops that until you connect
+Pressing Disconnect (or `quickpuff disconnect`) stops that until you connect
 again.
 
 Battery capacity is what the Peak's fuel gauge has learned the pack holds,
 shown against the stock Peak Pro battery's rated 1700 mAh.
 
-To go easy on the Peak's battery, OmaPuffco only checks it every 20 seconds
+To go easy on the Peak's battery, QuickPuff only checks it every 20 seconds
 while nothing is heating and the panel is closed; it speeds up the moment you
 open the panel or start a heat cycle.
 
-With battery saver on, OmaPuffco also lets go of the Peak when it's done.
+With battery saver on, QuickPuff also lets go of the Peak when it's done.
 The Peak Pro ignores a sleep command over Bluetooth, and an open
 Bluetooth link keeps its radio busy, so 30 seconds after a session (or after
 10 idle minutes) the daemon disconnects and the bar shows the last battery
@@ -155,16 +158,16 @@ notification; it's counted at the next check-in.
 
 ### Where the usage numbers come from
 
-The Peak keeps its own log of heat cycles. OmaPuffco reads it when it connects and
+The Peak keeps its own log of heat cycles. QuickPuff reads it when it connects and
 after each session, and counts every cycle that reached temperature;
-`omapuffco sync` does the same on demand. Until the phone app sets the Peak's clock
-after a restart, the log's timestamps count from boot. OmaPuffco places those using
+`quickpuff sync` does the same on demand. Until the phone app sets the Peak's clock
+after a restart, the log's timestamps count from boot. QuickPuff places those using
 the Peak's current clock, and skips cycles from before a later restart rather
 than guessing their date. For any period the device log no longer covers, the
-cycles OmaPuffco saw while connected fill in.
+cycles QuickPuff saw while connected fill in.
 
 Usage is kept per Peak, by serial number. Your Peak brings its stats to any
-computer running OmaPuffco, rebuilt from its own log, and a friend's Peak shows
+computer running QuickPuff, rebuilt from its own log, and a friend's Peak shows
 its own stats instead of mixing into yours. The Peak's log holds roughly its
 last 1,000 events (several weeks of use); older day-by-day history stays on
 the computer that recorded it. The lifetime total always comes from the Peak.
@@ -175,38 +178,38 @@ The widget runs these under the hood; they also work for scripting or outside
 Omarchy.
 
 ```bash
-omapuffco scan
-omapuffco connect                  # or: omapuffco connect --mac AA:BB:...
-omapuffco disconnect               # free the Peak for your phone or another PC
-omapuffco status
-omapuffco heat start|stop|boost
-omapuffco profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
-omapuffco lantern on
-omapuffco brightness 160
-omapuffco color '#ff6a1a' --index 0  # a profile's LED color
-omapuffco stealth on
-omapuffco battery                  # show the charge on the Peak's own lights
-omapuffco preserve on              # stop charging at 80% (off: charge to 100%)
-omapuffco saver on                 # rest the Peak after sessions and 10 min idle
-omapuffco clean --every 30         # remind after N dabs (10–100)
-omapuffco clean done               # reset the cleaning countdown
-omapuffco qtip on|off              # Q-tip reminder after each dab
-omapuffco sessions --limit 20      # recent dabs with their notes
-omapuffco note d1473 "great flavor" # add or edit a dab's note (no text clears it)
-omapuffco limit 5                  # notify after 5 dabs in a day (0 = off)
-omapuffco recap                    # this week so far; `recap on|off` for Sundays
-omapuffco stats                    # today / week / month / year / lifetime
-omapuffco sync                     # pull usage history from the Peak's log
-omapuffco faults                   # faults the Peak recorded
-omapuffco doctor                   # check Bluetooth, the daemon and your Peak
-omapuffco waybar                   # status JSON for the bar widget
-omapuffco off
+quickpuff scan
+quickpuff connect                  # or: quickpuff connect --mac AA:BB:...
+quickpuff disconnect               # free the Peak for your phone or another PC
+quickpuff status
+quickpuff heat start|stop|boost
+quickpuff profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
+quickpuff lantern on
+quickpuff brightness 160
+quickpuff color '#ff6a1a' --index 0  # a profile's LED color
+quickpuff stealth on
+quickpuff battery                  # show the charge on the Peak's own lights
+quickpuff preserve on              # stop charging at 80% (off: charge to 100%)
+quickpuff saver on                 # rest the Peak after sessions and 10 min idle
+quickpuff clean --every 30         # remind after N dabs (10–100)
+quickpuff clean done               # reset the cleaning countdown
+quickpuff qtip on|off              # Q-tip reminder after each dab
+quickpuff sessions --limit 20      # recent dabs with their notes
+quickpuff note d1473 "great flavor" # add or edit a dab's note (no text clears it)
+quickpuff limit 5                  # notify after 5 dabs in a day (0 = off)
+quickpuff recap                    # this week so far; `recap on|off` for Sundays
+quickpuff stats                    # today / week / month / year / lifetime
+quickpuff sync                     # pull usage history from the Peak's log
+quickpuff faults                   # faults the Peak recorded
+quickpuff doctor                   # check Bluetooth, the daemon and your Peak
+quickpuff waybar                   # status JSON for the bar widget
+quickpuff off
 ```
 
 ## Bluetooth adapter
 
-OmaPuffco uses the first powered adapter BlueZ reports. To pin a specific one when
-you have several, set it in `~/.config/omapuffco/config.json` (`bluetoothctl list`
+QuickPuff uses the first powered adapter BlueZ reports. To pin a specific one when
+you have several, set it in `~/.config/quickpuff/config.json` (`bluetoothctl list`
 shows what you have):
 
 ```json
@@ -216,11 +219,11 @@ shows what you have):
 ## Development
 
 ```bash
-git clone https://github.com/Auxxed/omapuffco.git
-cd omapuffco
+git clone https://github.com/Auxxed/quickpuff.git
+cd quickpuff
 ./install.sh                   # links the checkout in as a development plugin
-~/.local/share/omapuffco/venv/bin/pip install pytest
-~/.local/share/omapuffco/venv/bin/python -m pytest
+~/.local/share/quickpuff/venv/bin/pip install pytest
+~/.local/share/quickpuff/venv/bin/python -m pytest
 ```
 
 Keep virtual environments outside the checkout: `omarchy plugin` refuses
@@ -228,7 +231,7 @@ symlinks inside a plugin folder, and a venv is full of them.
 
 The tests cover the CBOR and color codec, audit-log decoding, dab-history date
 maths, config and profile limits, battery saver resting and waking, the command
-queue, notifications and goals, `omapuffco doctor`, the CLI parser, the daemon
+queue, notifications and goals, `quickpuff doctor`, the CLI parser, the daemon
 liveness probe, and the plugin manifest. The Bluetooth layer itself needs real
 hardware, so it's exercised by hand against a Peak Pro.
 

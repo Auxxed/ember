@@ -8,19 +8,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from omapuffco.daemon import (
+from quickpuff.daemon import (
     CLEAN_EVERY_MAX,
     CLEAN_EVERY_MIN,
     DEFAULT_CLEAN_EVERY,
-    OmaPuffcoDaemon,
+    QuickPuffDaemon,
     clean_remaining,
     snap_clean_every,
 )
-from omapuffco.paths import load_config
+from quickpuff.paths import load_config
 
 
-def _daemon(tmp_path: Path) -> OmaPuffcoDaemon:
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+def _daemon(tmp_path: Path) -> QuickPuffDaemon:
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 class TestSnapCleanEvery:

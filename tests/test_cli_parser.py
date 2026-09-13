@@ -5,7 +5,7 @@ import asyncio
 
 import pytest
 
-from omapuffco.cli import async_main
+from quickpuff.cli import async_main
 
 
 def test_help_builds_for_every_command(capsys):

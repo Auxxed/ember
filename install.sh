@@ -1,57 +1,71 @@
 #!/usr/bin/env bash
-# Sets up OmaPuffco's backend: a Python environment for the Bluetooth
-# libraries, the `omapuffco` command, and the user systemd daemon the bar
+# Sets up QuickPuff's backend: a Python environment for the Bluetooth
+# libraries, the `quickpuff` command, and the user systemd daemon the bar
 # widget talks to. Everything lands in your home directory; no root access is
 # needed. Safe to re-run, and it migrates an install from when the project was
-# called Ember.
+# called OmaPuffco or Ember.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
-DATA_DIR="$DATA_HOME/omapuffco"
+DATA_DIR="$DATA_HOME/quickpuff"
 UNIT_DIR="$CONFIG_HOME/systemd/user"
 PLUGIN_DIR="$CONFIG_HOME/omarchy/plugins"
 SHELL_CONFIG="$CONFIG_HOME/omarchy/shell.json"
 VENV="$DATA_DIR/venv"
-PLUGIN_ID="auxxed.omapuffco"
-LEGACY_PLUGIN_ID="auxxed.ember"
-INSTALL_LINE="omarchy plugin add https://github.com/Auxxed/omapuffco --enable && ~/.config/omarchy/plugins/$PLUGIN_ID/install.sh"
+PLUGIN_ID="auxxed.quickpuff"
+# Earlier names of this project, newest first.
+LEGACY_NAMES=(omapuffco ember)
+INSTALL_LINE="omarchy plugin add https://github.com/Auxxed/quickpuff --enable && ~/.config/omarchy/plugins/$PLUGIN_ID/install.sh"
 
 say() { printf '==> %s\n' "$*"; }
-die() { printf 'omapuffco: %s\n' "$*" >&2; exit 1; }
+die() { printf 'quickpuff: %s\n' "$*" >&2; exit 1; }
 
-say "OmaPuffco — Peak Pro controls ($ROOT)"
+say "QuickPuff — Peak Pro controls ($ROOT)"
 
 command -v python3 >/dev/null || die "python3 is required"
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' || die "Python 3.10 or newer is required"
 command -v bluetoothctl >/dev/null || die "BlueZ is required (bluetoothctl not found)"
 command -v systemctl >/dev/null || die "systemd is required to run the background daemon"
 
-if [[ $ROOT == "$PLUGIN_DIR/$LEGACY_PLUGIN_ID" ]]; then
-  die "this copy is still installed under the old Ember name. Run: omarchy plugin remove $LEGACY_PLUGIN_ID --yes && $INSTALL_LINE"
-fi
+for legacy in "${LEGACY_NAMES[@]}"; do
+  if [[ $ROOT == "$PLUGIN_DIR/auxxed.$legacy" ]]; then
+    die "this copy is still installed under the old plugin id auxxed.$legacy. Run: omarchy plugin remove auxxed.$legacy --yes && $INSTALL_LINE"
+  fi
+done
 
-if [[ -f $UNIT_DIR/ember-daemon.service ]]; then
-  say "Migrating from Ember"
-  systemctl --user disable --now ember-daemon.service >/dev/null 2>&1 || true
-  rm -f "$UNIT_DIR/ember-daemon.service"
-  systemctl --user daemon-reload
-fi
-if [[ -d $CONFIG_HOME/ember && ! -e $CONFIG_HOME/omapuffco ]]; then
-  mv "$CONFIG_HOME/ember" "$CONFIG_HOME/omapuffco"
-fi
-if [[ -f $DATA_HOME/ember/dabs.json && ! -e $DATA_DIR/dabs.json ]]; then
-  mkdir -p "$DATA_DIR"
-  mv "$DATA_HOME/ember/dabs.json" "$DATA_DIR/dabs.json"
-fi
-if [[ -L $DATA_HOME/ember/venv ]]; then rm "$DATA_HOME/ember/venv"; fi
-if [[ -L $DATA_HOME/ember/src ]]; then rm "$DATA_HOME/ember/src"; fi
-rmdir "$DATA_HOME/ember" 2>/dev/null || true
-if [[ -f $BIN_DIR/ember ]] && grep -q -- '-m ember' "$BIN_DIR/ember"; then
-  rm "$BIN_DIR/ember"
-fi
+# Earlier names: stop their daemon, carry settings and dab history across, and
+# drop their command.
+for legacy in "${LEGACY_NAMES[@]}"; do
+  if [[ -f $UNIT_DIR/$legacy-daemon.service ]]; then
+    say "Migrating from the $legacy install"
+    systemctl --user disable --now "$legacy-daemon.service" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$legacy-daemon.service"
+    systemctl --user daemon-reload
+  fi
+  if [[ -d $CONFIG_HOME/$legacy && ! -e $CONFIG_HOME/quickpuff ]]; then
+    mv "$CONFIG_HOME/$legacy" "$CONFIG_HOME/quickpuff"
+  fi
+  old_data="$DATA_HOME/$legacy"
+  if [[ -d $old_data && ! -L $old_data ]]; then
+    mkdir -p "$DATA_DIR"
+    for item in "$old_data"/* "$old_data"/.[!.]*; do
+      [[ -e $item || -L $item ]] || continue
+      name="$(basename "$item")"
+      case $name in
+        # Rebuilt below: a venv's scripts hard-code the path it was made at.
+        venv | src) rm -rf "$item" ;;
+        *) [[ -e $DATA_DIR/$name ]] || mv "$item" "$DATA_DIR/$name" ;;
+      esac
+    done
+    rmdir "$old_data" 2>/dev/null || true
+  fi
+  if [[ -f $BIN_DIR/$legacy ]] && grep -q -- "-m $legacy" "$BIN_DIR/$legacy"; then
+    rm "$BIN_DIR/$legacy"
+  fi
+done
 
 say "Python environment ($VENV)"
 mkdir -p "$DATA_DIR" "$BIN_DIR" "$UNIT_DIR"
@@ -59,43 +73,49 @@ mkdir -p "$DATA_DIR" "$BIN_DIR" "$UNIT_DIR"
 "$VENV/bin/pip" install -q --upgrade pip
 "$VENV/bin/pip" install -q -r "$ROOT/requirements.txt"
 
-say "omapuffco command ($BIN_DIR/omapuffco)"
-cat > "$BIN_DIR/omapuffco" <<EOF
+say "quickpuff command ($BIN_DIR/quickpuff)"
+cat > "$BIN_DIR/quickpuff" <<EOF
 #!/usr/bin/env bash
 export PYTHONPATH="$ROOT/src\${PYTHONPATH:+:\$PYTHONPATH}"
-exec "$VENV/bin/python" -m omapuffco "\$@"
+exec "$VENV/bin/python" -m quickpuff "\$@"
 EOF
-chmod +x "$BIN_DIR/omapuffco"
+chmod +x "$BIN_DIR/quickpuff"
 
 say "Background daemon (systemd user service)"
 sed \
-  -e "s|%h/.local/share/omapuffco/venv|$VENV|g" \
-  -e "s|%h/.local/share/omapuffco/src|$ROOT/src|g" \
-  "$ROOT/packaging/omapuffco-daemon.service" > "$UNIT_DIR/omapuffco-daemon.service"
+  -e "s|%h/.local/share/quickpuff/venv|$VENV|g" \
+  -e "s|%h/.local/share/quickpuff/src|$ROOT/src|g" \
+  "$ROOT/packaging/quickpuff-daemon.service" > "$UNIT_DIR/quickpuff-daemon.service"
 systemctl --user daemon-reload
-systemctl --user enable omapuffco-daemon.service >/dev/null
-systemctl --user restart omapuffco-daemon.service
+systemctl --user enable quickpuff-daemon.service >/dev/null
+systemctl --user restart quickpuff-daemon.service
 
 if command -v omarchy >/dev/null; then
   say "Omarchy bar widget"
   mkdir -p "$PLUGIN_DIR"
 
-  # Remember where the old Ember widget sat so the new one takes its place.
+  # Remember where the old widget sat so the new one takes its place.
   placement=""
   if [[ -f $SHELL_CONFIG ]] && command -v jq >/dev/null; then
-    placement=$(jq -r --arg id "$LEGACY_PLUGIN_ID" '
-      (.bar.layout // {}) | to_entries[]
-      | .key as $section
-      | (.value | map(if type == "object" then .id else . end) | index($id)) as $i
-      | select($i != null) | "\($section) \($i)"' "$SHELL_CONFIG" 2>/dev/null | head -n1) || placement=""
+    for legacy in "${LEGACY_NAMES[@]}"; do
+      placement=$(jq -r --arg id "auxxed.$legacy" '
+        (.bar.layout // {}) | to_entries[]
+        | .key as $section
+        | (.value | map(if type == "object" then .id else . end) | index($id)) as $i
+        | select($i != null) | "\($section) \($i)"' "$SHELL_CONFIG" 2>/dev/null | head -n1) || placement=""
+      [[ -n $placement ]] && break
+    done
   fi
 
-  if [[ -L $PLUGIN_DIR/$LEGACY_PLUGIN_ID ]]; then
-    omarchy plugin disable "$LEGACY_PLUGIN_ID" >/dev/null 2>&1 || true
-    rm "$PLUGIN_DIR/$LEGACY_PLUGIN_ID"
-  elif [[ -d $PLUGIN_DIR/$LEGACY_PLUGIN_ID ]]; then
-    omarchy plugin remove "$LEGACY_PLUGIN_ID" --yes >/dev/null 2>&1 || true
-  fi
+  for legacy in "${LEGACY_NAMES[@]}"; do
+    old_plugin="$PLUGIN_DIR/auxxed.$legacy"
+    if [[ -L $old_plugin ]]; then
+      omarchy plugin disable "auxxed.$legacy" >/dev/null 2>&1 || true
+      rm "$old_plugin"
+    elif [[ -d $old_plugin ]]; then
+      omarchy plugin remove "auxxed.$legacy" --yes >/dev/null 2>&1 || true
+    fi
+  done
 
   if [[ ! -e $PLUGIN_DIR/$PLUGIN_ID && ! -L $PLUGIN_DIR/$PLUGIN_ID ]]; then
     # Run from a plain clone rather than `omarchy plugin add`: link the
@@ -117,12 +137,12 @@ if command -v omarchy >/dev/null; then
 fi
 
 echo
-echo "OmaPuffco is installed."
+echo "QuickPuff is installed."
 echo "  Wake the Peak Pro, keep it near this computer, and disconnect the phone app"
-echo "  (the Peak accepts one connection at a time). Then click the OmaPuffco widget"
-echo "  in the bar and choose Connect, or run: omapuffco connect"
-echo "  If anything doesn't work, run: omapuffco doctor"
+echo "  (the Peak accepts one connection at a time). Then click the QuickPuff widget"
+echo "  in the bar and choose Connect, or run: quickpuff connect"
+echo "  If anything doesn't work, run: quickpuff doctor"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) echo "  Add $BIN_DIR to your PATH to use the omapuffco command in a terminal." ;;
+  *) echo "  Add $BIN_DIR to your PATH to use the quickpuff command in a terminal." ;;
 esac

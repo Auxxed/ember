@@ -7,7 +7,7 @@ what actually stands between a malformed request and the heater.
 
 import pytest
 
-from omapuffco.daemon import (
+from quickpuff.daemon import (
     MAX_BOOST_TEMP_F,
     MAX_BOOST_TIME_S,
     MAX_LANTERN_S,
@@ -21,7 +21,7 @@ from omapuffco.daemon import (
     _clamp,
     _validate_index,
 )
-from omapuffco.utils import PuffcoUtils
+from quickpuff.utils import PuffcoUtils
 
 
 class TestClamp:
@@ -43,7 +43,7 @@ class TestTemperatureLimits:
         assert MAX_TEMP_F <= 620
 
     def test_absurd_celsius_request_still_lands_in_range(self):
-        # `omapuffco profile 0 --temp-c 500` must not reach the device as-is.
+        # `quickpuff profile 0 --temp-c 500` must not reach the device as-is.
         requested = PuffcoUtils.c_to_f(500)
         assert _clamp(requested, MIN_TEMP_F, MAX_TEMP_F) == MAX_TEMP_F
 

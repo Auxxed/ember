@@ -2,9 +2,9 @@ import asyncio
 
 import cbor2
 
-from omapuffco.ble import PuffcoBLE
-from omapuffco.codec import hexify
-from omapuffco.lights import solid_color_payload
+from quickpuff.ble import PuffcoBLE
+from quickpuff.codec import hexify
+from quickpuff.lights import solid_color_payload
 
 PATH = "/u/app/hc/3/colr"
 

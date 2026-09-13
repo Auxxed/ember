@@ -1,4 +1,4 @@
-"""`omapuffco doctor`: check what OmaPuffco needs, and say how to fix what's missing.
+"""`quickpuff doctor`: check what QuickPuff needs, and say how to fix what's missing.
 
 Each check is a small function over plain inputs so it can be tested without
 Bluetooth; `gather` does the real probing.
@@ -15,7 +15,7 @@ from typing import Any
 from . import __version__
 from .paths import load_config
 
-PLUGIN_ID = "auxxed.omapuffco"
+PLUGIN_ID = "auxxed.quickpuff"
 
 
 @dataclass
@@ -62,21 +62,21 @@ def check_daemon(daemon_version: str | None, installed: str = __version__) -> Ch
             "Daemon",
             False,
             "not running",
-            "systemctl --user restart omapuffco-daemon  (or re-run install.sh)",
+            "systemctl --user restart quickpuff-daemon  (or re-run install.sh)",
         )
     if daemon_version != installed:
         return Check(
             "Daemon",
             False,
             f"running {daemon_version}, but {installed} is installed",
-            "systemctl --user restart omapuffco-daemon",
+            "systemctl --user restart quickpuff-daemon",
         )
     return Check("Daemon", True, f"running {daemon_version}")
 
 
 def check_widget(plugins: list[dict] | None, omarchy_found: bool) -> Check:
     if not omarchy_found:
-        return Check("Bar widget", None, "Omarchy not found; the omapuffco command still works")
+        return Check("Bar widget", None, "Omarchy not found; the quickpuff command still works")
     if plugins is None:
         return Check("Bar widget", None, "couldn't list Omarchy plugins")
     entry = next((p for p in plugins if p.get("id") == PLUGIN_ID), None)
@@ -85,7 +85,7 @@ def check_widget(plugins: list[dict] | None, omarchy_found: bool) -> Check:
             "Bar widget",
             False,
             "not installed",
-            "omarchy plugin add https://github.com/Auxxed/omapuffco --enable",
+            "omarchy plugin add https://github.com/Auxxed/quickpuff --enable",
         )
     if not entry.get("enabled"):
         return Check("Bar widget", False, "installed but disabled", f"omarchy plugin enable {PLUGIN_ID}")
@@ -100,7 +100,7 @@ def check_saved_peak(cfg: dict[str, Any], paired: bool | None) -> Check:
             "Peak",
             None,
             "none connected yet",
-            "Wake the Peak, disconnect the phone app, then press Connect (or run: omapuffco connect).",
+            "Wake the Peak, disconnect the phone app, then press Connect (or run: quickpuff connect).",
         )
     label = f"{name} ({mac})" if name and mac else name or mac
     if paired is False:
@@ -123,7 +123,7 @@ def check_connection(status: dict[str, Any] | None) -> Check:
             "Connection",
             None,
             "not connected",
-            "Wake the Peak, keep it close, and press Connect (or run: omapuffco connect).",
+            "Wake the Peak, keep it close, and press Connect (or run: quickpuff connect).",
         )
     product = (status.get("product") or {}).get("label") or "Peak Pro"
     detail = f"{product}, firmware {status.get('firmware') or '?'}"

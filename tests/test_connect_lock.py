@@ -1,6 +1,6 @@
 import asyncio
 
-from omapuffco.daemon import OmaPuffcoDaemon
+from quickpuff.daemon import QuickPuffDaemon
 
 
 class FakePeak:
@@ -10,7 +10,7 @@ class FakePeak:
 
 
 def daemon(tmp_path):
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 def test_connects_never_overlap(tmp_path):

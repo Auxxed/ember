@@ -1,6 +1,6 @@
 import json
 
-from omapuffco.cli import print_waybar
+from quickpuff.cli import print_waybar
 
 
 def waybar(capsys, **status):
@@ -32,7 +32,7 @@ def test_countdown_never_goes_negative(capsys):
 def test_tooltip_shows_time_until_full_while_charging(capsys):
     import json as _json
 
-    from omapuffco.cli import print_waybar
+    from quickpuff.cli import print_waybar
 
     print_waybar(
         {

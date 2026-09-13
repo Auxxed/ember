@@ -2,7 +2,7 @@ import json
 import time
 from datetime import datetime
 
-from omapuffco import history
+from quickpuff import history
 
 
 def write_events(deltas_at_offsets, first_seen=None):

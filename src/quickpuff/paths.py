@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-SOCKET_NAME = "omapuffco.sock"
+SOCKET_NAME = "quickpuff.sock"
 
 DEFAULTS: dict[str, Any] = {
     "device_mac": "",
@@ -31,23 +31,23 @@ DEFAULTS: dict[str, Any] = {
 
 def runtime_dir() -> Path:
     raw = os.environ.get("XDG_RUNTIME_DIR")
-    return Path(raw) if raw else Path(f"/tmp/omapuffco-{os.getuid()}")
+    return Path(raw) if raw else Path(f"/tmp/quickpuff-{os.getuid()}")
 
 
 def config_dir() -> Path:
     raw = os.environ.get("XDG_CONFIG_HOME")
     base = Path(raw) if raw else Path.home() / ".config"
-    return base / "omapuffco"
+    return base / "quickpuff"
 
 
 def data_dir() -> Path:
     raw = os.environ.get("XDG_DATA_HOME")
     base = Path(raw) if raw else Path.home() / ".local" / "share"
-    return base / "omapuffco"
+    return base / "quickpuff"
 
 
 def socket_path() -> Path:
-    override = os.environ.get("OMAPUFFCO_SOCKET")
+    override = os.environ.get("QUICKPUFF_SOCKET")
     if override:
         return Path(override)
     return runtime_dir() / SOCKET_NAME
@@ -58,7 +58,7 @@ def config_path() -> Path:
 
 
 def log_path() -> Path:
-    return runtime_dir() / "omapuffco-daemon.log"
+    return runtime_dir() / "quickpuff-daemon.log"
 
 
 def write_json_atomic(path: Path, data: Any, *, indent: int | None = None) -> None:

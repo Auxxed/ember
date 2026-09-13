@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 
-from omapuffco import daemon as daemon_module
-from omapuffco.ble import PuffcoBLE
-from omapuffco.cli import async_main
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.paths import load_config, save_config
+from quickpuff import daemon as daemon_module
+from quickpuff.ble import PuffcoBLE
+from quickpuff.cli import async_main
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.paths import load_config, save_config
 
 
 class FakePeak:
@@ -24,7 +24,7 @@ class FakePeak:
 
 
 def make_daemon(tmp_path):
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 @pytest.mark.parametrize("command", ["sleep", "version"])

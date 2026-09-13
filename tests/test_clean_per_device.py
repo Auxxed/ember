@@ -1,9 +1,9 @@
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.paths import load_config, save_config
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.paths import load_config, save_config
 
 
 def daemon(tmp_path):
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 def test_each_peak_keeps_its_own_cleaning_baseline(tmp_path):

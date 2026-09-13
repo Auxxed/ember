@@ -1,4 +1,4 @@
-"""Start the OmaPuffco daemon if it is not already listening."""
+"""Start the QuickPuff daemon if it is not already listening."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def systemd_owns_daemon() -> bool:
                 "ActiveState",
                 "-p",
                 "UnitFileState",
-                "omapuffco-daemon.service",
+                "quickpuff-daemon.service",
             ],
             capture_output=True,
             text=True,
@@ -87,7 +87,7 @@ def ensure_daemon(timeout: float = 8.0) -> None:
                 return
             time.sleep(0.1)
         raise RuntimeError(
-            f"OmaPuffco systemd daemon did not come back. Check {log_path()}"
+            f"QuickPuff systemd daemon did not come back. Check {log_path()}"
         )
     runtime_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
     log = log_path()
@@ -97,7 +97,7 @@ def ensure_daemon(timeout: float = 8.0) -> None:
     env["PYTHONPATH"] = src if not existing else f"{src}:{existing}"
     handle = open(log, "ab", buffering=0)
     subprocess.Popen(
-        [python_executable(), "-m", "omapuffco.daemon"],
+        [python_executable(), "-m", "quickpuff.daemon"],
         cwd=str(project_root()),
         stdout=handle,
         stderr=subprocess.STDOUT,
@@ -110,5 +110,5 @@ def ensure_daemon(timeout: float = 8.0) -> None:
             return
         time.sleep(0.1)
     raise RuntimeError(
-        f"OmaPuffco daemon did not start. Check {log}"
+        f"QuickPuff daemon did not start. Check {log}"
     )

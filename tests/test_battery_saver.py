@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from omapuffco.constants import OperatingState
-from omapuffco.daemon import (
+from quickpuff.constants import OperatingState
+from quickpuff.daemon import (
     CYCLE_STATES,
     HEAT_STATES,
-    OmaPuffcoDaemon,
+    QuickPuffDaemon,
     cycle_just_ended,
 )
-from omapuffco.paths import load_config
+from quickpuff.paths import load_config
 
 
 PREHEAT = int(OperatingState.HEAT_CYCLE_PREHEAT)
@@ -41,8 +41,8 @@ class FakePeak:
         self.lantern_stopped = True
 
 
-def _daemon(tmp_path: Path) -> OmaPuffcoDaemon:
-    return OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+def _daemon(tmp_path: Path) -> QuickPuffDaemon:
+    return QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
 
 
 class TestCycleJustEnded:
@@ -117,7 +117,7 @@ class TestSetBatterySaver:
 
 class TestSaverSleep:
     def test_rests_when_idle_and_turns_lantern_off(self, tmp_path, monkeypatch):
-        import omapuffco.daemon as daemon_mod
+        import quickpuff.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "BATTERY_SAVER_SLEEP_S", 0)
         daemon = _daemon(tmp_path)
@@ -134,7 +134,7 @@ class TestSaverSleep:
         assert daemon.lantern is False
 
     def test_skips_sleep_if_the_peak_started_a_cycle_since_the_last_poll(self, tmp_path, monkeypatch):
-        import omapuffco.daemon as daemon_mod
+        import quickpuff.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "BATTERY_SAVER_SLEEP_S", 0)
         daemon = _daemon(tmp_path)
@@ -152,7 +152,7 @@ class TestSaverSleep:
         assert daemon.status["operating_state_id"] == PREHEAT
 
     def test_skips_sleep_while_the_user_is_active(self, tmp_path, monkeypatch):
-        import omapuffco.daemon as daemon_mod
+        import quickpuff.daemon as daemon_mod
 
         monkeypatch.setattr(daemon_mod, "BATTERY_SAVER_SLEEP_S", 30)
         daemon = _daemon(tmp_path)

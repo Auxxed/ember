@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "id": "auxxed.omapuffco",
-  "name": "OmaPuffco",
-  "version": "0.4.1",
+  "id": "auxxed.quickpuff",
+  "name": "QuickPuff",
+  "version": "0.5.0",
   "author": "Auxxed",
   "license": "MIT",
-  "homepage": "https://github.com/Auxxed/omapuffco",
+  "homepage": "https://github.com/Auxxed/quickpuff",
   "description": "Peak Pro chamber temp, battery, and heat controls in the bar",
   "kinds": ["bar-widget"],
   "entryPoints": {
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "OmaPuffco",
+    "displayName": "QuickPuff",
     "description": "Chamber temp, battery, and heat state for a Puffco Peak Pro. Left-click opens the controls, right-click starts heating, middle-click refreshes.",
     "category": "System",
     "aliases": ["peak", "puffco", "dab"],

@@ -9,11 +9,11 @@ import json
 
 import pytest
 
-from omapuffco import daemon as daemon_module
-from omapuffco.cli import print_waybar
-from omapuffco.constants import OperatingState
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.paths import load_config
+from quickpuff import daemon as daemon_module
+from quickpuff.cli import print_waybar
+from quickpuff.constants import OperatingState
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.paths import load_config
 
 IDLE = int(OperatingState.IDLE)
 PREHEAT = int(OperatingState.HEAT_CYCLE_PREHEAT)
@@ -46,7 +46,7 @@ def no_saver_delay(monkeypatch):
 
 
 def make_daemon(tmp_path, peak):
-    d = OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    d = QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
     d.battery_saver = True
     d._want_connected = True
     d.device = peak

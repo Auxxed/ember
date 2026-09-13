@@ -1,4 +1,4 @@
-from omapuffco.codec import (
+from quickpuff.codec import (
     decode_puffco_json,
     first_color,
     hexify,

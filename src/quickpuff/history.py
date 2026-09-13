@@ -5,7 +5,7 @@ brings its usage along to any computer (rebuilt from its own audit log) and a
 friend's Peak shows its own stats rather than mixing into yours.
 
 Two sources: heat sessions read from the Peak's own audit log (see
-audit.py), and cycles OmaPuffco watched locally while connected. The device log
+audit.py), and cycles QuickPuff watched locally while connected. The device log
 is authoritative for the period it covers; local events fill in before it
 and still supply per-session temperature, duration and color.
 """
@@ -120,7 +120,7 @@ def record_total(total_dabs: Optional[int]) -> Optional[dict[str, Any]]:
 
     if last is None or not seen:
         # First real observation: set a baseline, don't invent history for
-        # dabs taken before OmaPuffco was installed / first connected. A zero
+        # dabs taken before QuickPuff was installed / first connected. A zero
         # does not count as "seen" — that's also the shape of a failed
         # read that used to get stored as last_total.
         data["last_total"] = total_dabs
@@ -169,7 +169,7 @@ def record_cycle(
     time_s: float | None = None,
     color: str | None = None,
 ) -> dict[str, Any]:
-    """Log one heat cycle OmaPuffco actually watched reach temperature."""
+    """Log one heat cycle QuickPuff actually watched reach temperature."""
     data = _load()
     now = time.time()
     last = data.get("last_total")
@@ -484,7 +484,7 @@ _NOTE_KEY = re.compile(r"^[dt]\d+$")
 
 def _session_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     """One row per dab: sessions from the Peak's log, and before the log
-    begins, the cycles OmaPuffco saw while connected (same split as the stats).
+    begins, the cycles QuickPuff saw while connected (same split as the stats).
 
     Keys are stable so notes stick: d<log index> for logged sessions, t<unix
     time> for locally seen ones.

@@ -1,8 +1,8 @@
 import asyncio
 
-from omapuffco.constants import OperatingState
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.paths import load_config
+from quickpuff.constants import OperatingState
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.paths import load_config
 
 IDLE = int(OperatingState.IDLE)
 PREHEAT = int(OperatingState.HEAT_CYCLE_PREHEAT)
@@ -12,7 +12,7 @@ SLEEP = int(OperatingState.SLEEP)
 
 
 def daemon(tmp_path):
-    d = OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    d = QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
     d.sent = []
     d._desktop_notify = lambda title, body, urgency="normal": d.sent.append(title)
     return d

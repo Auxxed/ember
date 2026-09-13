@@ -39,7 +39,7 @@ from .product_info import get_product_info, is_proxy
 from .utils import PuffcoUtils
 from .vapor import name_for as vapor_name_for
 
-log = logging.getLogger("omapuffco.ble")
+log = logging.getLogger("quickpuff.ble")
 
 _STRUCT_FORMATS = {
     "int8": "b",
@@ -290,7 +290,7 @@ class PuffcoBLE:
             services = set()
         if services and LoraxService.UUID.lower() not in services:
             raise LoraxError(
-                "This Peak's firmware predates the Bluetooth protocol OmaPuffco uses. "
+                "This Peak's firmware predates the Bluetooth protocol QuickPuff uses. "
                 "Update it once in the Puffco app, then connect again."
             )
         self.client = client
@@ -717,7 +717,7 @@ class PuffcoBLE:
     async def require_peak_pro(self) -> dict[str, Any]:
         info = await self.get_device_info()
         if is_proxy(info):
-            raise RuntimeError("That device is a Proxy/Pivot. OmaPuffco only talks to Peak Pro.")
+            raise RuntimeError("That device is a Proxy/Pivot. QuickPuff only talks to Peak Pro.")
         return info
 
     async def get_heater_temp_c(self) -> float | None:
@@ -813,7 +813,7 @@ class PuffcoBLE:
     async def _read_dab_count(self, path: str) -> int:
         # These counters are float32 values in a 12-byte Lorax file. Asking
         # for 4 bytes as uint32 is rejected with status 0x02 on current
-        # Peak Pro firmware, which is how OmaPuffco used to report 0 forever.
+        # Peak Pro firmware, which is how QuickPuff used to report 0 forever.
         return int(round(float(await self.read(path, 0, 12, "float32"))))
 
     async def get_approx_dabs_remaining(self) -> int:

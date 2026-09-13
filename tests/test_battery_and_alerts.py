@@ -1,13 +1,13 @@
 import asyncio
 
-from omapuffco import history
-from omapuffco.cli import format_eta, low_battery_heat_warning
-from omapuffco.daemon import OmaPuffcoDaemon
-from omapuffco.paths import load_config, save_config
+from quickpuff import history
+from quickpuff.cli import format_eta, low_battery_heat_warning
+from quickpuff.daemon import QuickPuffDaemon
+from quickpuff.paths import load_config, save_config
 
 
 def daemon(tmp_path):
-    d = OmaPuffcoDaemon(sock=tmp_path / "omapuffco.sock")
+    d = QuickPuffDaemon(sock=tmp_path / "quickpuff.sock")
     d.sent = []
     d._desktop_notify = lambda title, body, urgency="normal": d.sent.append(title)
     return d

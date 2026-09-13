@@ -1,7 +1,7 @@
 import struct
 
-from omapuffco import faults
-from omapuffco.audit import parse_entry
+from quickpuff import faults
+from quickpuff.audit import parse_entry
 
 
 def raw(ts, code):

@@ -1,5 +1,5 @@
-from omapuffco.constants import BatteryChargeSource, CHARGE_SOURCE_LABELS
-from omapuffco.utils import PuffcoUtils
+from quickpuff.constants import BatteryChargeSource, CHARGE_SOURCE_LABELS
+from quickpuff.utils import PuffcoUtils
 
 
 class TestTemperature:
