@@ -102,7 +102,10 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
         return
     units = units or load_config().get("units") or "F"
     if not data.get("connected"):
-        print("Disconnected")
+        if data.get("resting"):
+            print(f"Resting to save battery ({data.get('battery')}% at the last check); reconnecting now")
+        else:
+            print("Disconnected")
         return
     product = (data.get("product") or {}).get("label") or "Peak Pro"
     print(f"{data.get('device_name')}  ·  {product}")
@@ -246,7 +249,10 @@ def print_waybar(data: dict) -> None:
     else:
         temp = _profile_temp(data, units)
     css = "disconnected"
-    if not connected:
+    resting = not connected and bool(data.get("resting"))
+    if resting:
+        css, text = "resting", battery_text
+    elif not connected:
         text = "Peak"
     elif state_id == 7:
         css, text = "preheat", f"{temp or 'heat'} ↑"
@@ -263,6 +269,8 @@ def print_waybar(data: dict) -> None:
         if temp:
             text = f"{temp}  {battery_text}"
     tooltip = state if not connected else f"{state} · {battery_text} · {temp}".strip(" ·")
+    if resting:
+        tooltip = f"Resting to save battery · {battery_text} at the last check"
     if connected and data.get("charge_eta_s"):
         tooltip = f"{tooltip} · full in {format_eta(data['charge_eta_s'])}"
     if connected and data.get("clean_due"):
@@ -346,7 +354,7 @@ async def async_main(argv: list[str] | None = None) -> int:
     stealth = sub.add_parser("stealth")
     stealth.add_argument("action", choices=["on", "off"])
 
-    saver = sub.add_parser("saver", help="Sleep the Peak 30 s after each session or after 10 min idle, turning the lantern off first")
+    saver = sub.add_parser("saver", help="Rest the Peak 30 s after each session or 10 min idle: lantern off, Bluetooth let go until needed")
     saver.add_argument("action", choices=["on", "off"])
 
     preserve = sub.add_parser("preserve", help="Battery Preservation: charge to 80%% only (on) or to 100%% (off)")

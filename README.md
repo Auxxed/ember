@@ -97,8 +97,8 @@ removal.
   temperature). **History** lists every dab with its profile, temperature and
   heat-up time; tap one to add a note, and tap again any time to edit it.
 - **Care** — Battery Preservation (charge to 80% only, the same setting as
-  the Puffco app's), battery saver (puts the Peak to sleep 30 seconds after a session
-  ends or after 10 minutes idle, turning the lantern off first), a Q-tip reminder after each dab, and a
+  the Puffco app's), battery saver (30 seconds after a session
+  or after 10 minutes idle, turns the lantern off and lets the Peak rest), a Q-tip reminder after each dab, and a
   chamber-clean reminder (every 10–100 dabs); under Goals, an optional daily
   limit and a weekly recap on Sunday evenings.
 - **Device** — rename the Peak; model, chamber, battery (with time until full
@@ -131,6 +131,15 @@ shown against the stock Peak Pro battery's rated 1700 mAh.
 To go easy on the Peak's battery, OmaPuffco only checks it every 20 seconds
 while nothing is heating and the panel is closed; it speeds up the moment you
 open the panel or start a heat cycle.
+
+With battery saver on, OmaPuffco also lets go of the Peak when it's done.
+Peak Pro firmware accepts the sleep command but stays awake, and an open
+Bluetooth link keeps its radio busy, so 30 seconds after a session (or after
+10 idle minutes) the daemon disconnects and the bar shows the last battery
+reading as resting. Opening the panel or running a command reconnects in a few
+seconds, and every 15 minutes it checks in to refresh the battery and count new
+dabs. While it rests, a dab started with the Peak's own button gets no "ready"
+notification; it's counted at the next check-in.
 
 ### Where the usage numbers come from
 
@@ -165,7 +174,7 @@ omapuffco brightness 160
 omapuffco color '#ff6a1a' --index 0  # a profile's LED color
 omapuffco stealth on
 omapuffco preserve on              # stop charging at 80% (off: charge to 100%)
-omapuffco saver on                 # sleep after sessions and 10 min idle
+omapuffco saver on                 # rest the Peak after sessions and 10 min idle
 omapuffco clean --every 30         # remind after N dabs (10–100)
 omapuffco clean done               # reset the cleaning countdown
 omapuffco qtip on|off              # Q-tip reminder after each dab

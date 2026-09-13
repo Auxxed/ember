@@ -83,6 +83,33 @@ WATCH_WINDOW_S = 10.0  # the open panel asks for status every 1.5 s
 FULL_SNAPSHOT_EVERY_S = 300.0
 # Battery saver also sleeps a Peak left idle this long.
 IDLE_SLEEP_S = 600.0
+# Peak Pro firmware (AW) accepts the sleep command but stays idle, and a held
+# Bluetooth link keeps its radio busy. So battery saver rests the Peak by
+# letting go of it, and checks in this often for the battery and new dabs.
+REST_CHECK_S = 900.0
+# Commands that never touch the Peak, so they leave a resting one alone.
+LOCAL_COMMANDS = frozenset(
+    {
+        "ping",
+        "scan",
+        "connect",
+        "disconnect",
+        "status",
+        "set_poll_interval",
+        "get_config",
+        "set_config",
+        "sessions",
+        "set_note",
+        "set_daily_limit",
+        "set_weekly_recap",
+        "recap",
+        "set_qtip_reminder",
+        "set_battery_saver",
+        "set_clean_every",
+        "mark_cleaned",
+        "stats",
+    }
+)
 
 
 def poll_delay(state_id: Any, watching: bool, watched_interval: float) -> float:
@@ -214,6 +241,10 @@ class OmaPuffcoDaemon:
         self.weekly_recap = _as_bool(load_config().get("weekly_recap", True))
         self._recap_task: Optional[asyncio.Task] = None
         self._saver_sleep_task: Optional[asyncio.Task] = None
+        self._resting = False
+        self._checking_in = False
+        self._rest_task: Optional[asyncio.Task] = None
+        self._wake_task: Optional[asyncio.Task] = None
         self._clean_serial: Optional[str] = None
         self._load_clean(load_config().get("last_serial"))
         self._server: Optional[asyncio.AbstractServer] = None
@@ -253,6 +284,8 @@ class OmaPuffcoDaemon:
             "lantern": False,
             "lantern_timeout": None,
             "battery_saver": False,
+            "resting": False,
+            "last_seen": None,
             "qtip_reminder": True,
             "daily_limit": 0,
             "weekly_recap": True,
@@ -332,6 +365,9 @@ class OmaPuffcoDaemon:
         self.status.update(self._clean_fields())
 
     def _on_ble_drop(self) -> None:
+        if self._resting:
+            # Battery saver let go of the Peak on purpose.
+            return
         log.warning("BLE link dropped")
         self.status["connected"] = False
         self.status["operating_state"] = "Disconnected"
@@ -384,13 +420,22 @@ class OmaPuffcoDaemon:
     async def _broadcast_event(self, event: str, data: Any) -> None:
         await self._broadcast({"event": event, "data": data})
 
-    async def _connect(self, device_name: Optional[str], device_mac: Optional[str]) -> dict:
+    async def _connect(self, device_name: Optional[str], device_mac: Optional[str], **options: bool) -> dict:
         # One connect at a time: the reconnect after a restart and a Connect
         # click racing each other both reached for the same Peak.
         async with self._connect_lock:
-            return await self._connect_unlocked(device_name, device_mac)
+            return await self._connect_unlocked(device_name, device_mac, **options)
 
-    async def _connect_unlocked(self, device_name: Optional[str], device_mac: Optional[str]) -> dict:
+    async def _connect_unlocked(
+        self,
+        device_name: Optional[str],
+        device_mac: Optional[str],
+        *,
+        profiles: bool = True,
+        sync: bool = True,
+    ) -> dict:
+        """Connect and take a snapshot. A rest check-in skips the heat
+        profiles (the costly read) and runs the usage sync itself."""
         wanted = (device_mac or "").strip().lower()
         if self.device and self.device.is_connected:
             current = str(self.device.address or self.device.device_mac or "").lower()
@@ -428,7 +473,10 @@ class OmaPuffcoDaemon:
             raise
         self.device = ble
         self._want_connected = True
-        snap = await ble.snapshot(include_profiles=True)
+        snap = await ble.snapshot(include_profiles=profiles)
+        if not profiles:
+            # Keep the profiles already shown; this read skipped them.
+            snap.pop("profiles", None)
         if is_proxy(snap.get("product")):
             await ble.disconnect()
             self.device = None
@@ -454,9 +502,11 @@ class OmaPuffcoDaemon:
                 "auto_connect": True,
             }
         )
+        self._end_rest()
         self._start_poll()
         await self._refresh_clean(self.status.get("total_dabs"), notify=True)
-        self._spawn(self._sync_usage_safe())
+        if sync:
+            self._spawn(self._sync_usage_safe())
         return self.status
 
     async def _sync_usage(self) -> dict:
@@ -546,6 +596,7 @@ class OmaPuffcoDaemon:
             log.warning("Usage sync failed: %s", exc)
 
     async def _disconnect(self, forget: bool = False) -> dict:
+        self._end_rest()
         if forget:
             self._want_connected = False
             # Stay away after a restart too, until Connect is pressed again.
@@ -688,7 +739,7 @@ class OmaPuffcoDaemon:
                 if not self.battery_saver:
                     return
                 # Someone is using the Peak from the panel or CLI; don't sleep it under them.
-                if time.monotonic() - self._last_user_cmd < BATTERY_SAVER_SLEEP_S:
+                if time.monotonic() - self._last_user_cmd < BATTERY_SAVER_SLEEP_S or self._watching():
                     return
                 dev = self.device
                 if not dev or not dev.is_connected:
@@ -706,13 +757,133 @@ class OmaPuffcoDaemon:
                         self.status["lantern"] = False
                     except Exception:
                         log.debug("battery saver: lantern off failed", exc_info=True)
+                # Some firmware sleeps on this. AW firmware ignores it, so let
+                # go of the Peak too, which is what quiets its radio.
                 await dev.enter_sleep_mode()
-                log.info("Battery saver: slept Peak after idle")
-                await self._broadcast_event("status", self.status)
+                await self._rest()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("Battery saver sleep failed: %s", exc)
+
+    async def _rest(self) -> None:
+        """Battery saver: let go of the Peak so its radio can idle.
+
+        The last reading stays on show, marked resting. Opening the panel or a
+        command that needs the Peak reconnects; meanwhile a check-in every
+        REST_CHECK_S refreshes the battery and syncs new dabs.
+        """
+        self._resting = True
+        self._stop_poll()
+        self._idle_since = None
+        dev, self.device = self.device, None
+        if dev:
+            try:
+                await dev.disconnect()
+            except Exception:
+                log.debug("rest: disconnect failed", exc_info=True)
+        self.status.update(
+            {
+                "connected": False,
+                "resting": True,
+                "last_seen": time.time(),
+                "operating_state": "Resting",
+                "operating_state_id": -1,
+                "heater_temp_c": None,
+                "heater_temp_f": None,
+            }
+        )
+        log.info("Battery saver: resting the Peak at %s%% battery", self.status.get("battery"))
+        if not self._rest_task or self._rest_task.done():
+            self._rest_task = asyncio.create_task(self._rest_loop())
+        await self._broadcast_event("status", self.status)
+
+    def _end_rest(self) -> None:
+        self._resting = False
+        self.status["resting"] = False
+        task = self._rest_task
+        # A check-in in progress finishes on its own and sees the rest is over.
+        if task and not task.done() and not self._checking_in and task is not asyncio.current_task():
+            task.cancel()
+            self._rest_task = None
+
+    def _rest_allowed(self) -> bool:
+        return (
+            self.battery_saver
+            and bool(self.device and self.device.is_connected)
+            and not self._watching()
+            and self.status.get("operating_state_id") == int(OperatingState.IDLE)
+            and time.monotonic() - self._last_user_cmd >= BATTERY_SAVER_SLEEP_S
+        )
+
+    async def _rest_loop(self) -> None:
+        while self._resting:
+            await asyncio.sleep(REST_CHECK_S)
+            if not self._resting:
+                return
+            self._checking_in = True
+            try:
+                await self._check_in()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("rest check-in failed")
+            finally:
+                self._checking_in = False
+
+    async def _check_in(self) -> None:
+        """Reconnect briefly while resting: fresh battery and synced dabs, then
+        rest again unless someone is using the Peak."""
+        try:
+            await self._connect(self._connect_name, self._connect_mac, profiles=False, sync=False)
+        except Exception as exc:
+            await self._drop_half_connected()
+            log.info("Rest check-in: couldn't reach the Peak (%s); trying again later", exc)
+            return
+        await self._sync_usage_safe()
+        async with self._cmd_lock:
+            if self._rest_allowed():
+                await self._rest()
+            else:
+                self._end_rest()
+
+    async def _drop_half_connected(self) -> None:
+        """A connect that failed after the link came up leaves a device behind."""
+        dev, self.device = self.device, None
+        self._stop_poll()
+        if dev:
+            try:
+                await dev.disconnect()
+            except Exception:
+                pass
+
+    async def _wake(self) -> None:
+        """Reconnect a resting Peak because someone wants it now."""
+        if not self._resting:
+            return
+        log.info("Waking the Peak from rest")
+        try:
+            await self._connect(self._connect_name, self._connect_mac)
+        except Exception:
+            if self._resting:
+                await self._drop_half_connected()
+                # Fall back to the usual retries, so it comes back once it's in range.
+                self._end_rest()
+                self._on_ble_drop()
+            raise
+        if self.device and self.device.is_connected:
+            self._end_rest()
+
+    def _wake_soon(self) -> None:
+        if self._wake_task and not self._wake_task.done():
+            return
+        self._wake_task = asyncio.create_task(self._wake_quietly())
+
+    async def _wake_quietly(self) -> None:
+        try:
+            await self._wake()
+        except Exception as exc:
+            log.warning("Couldn't wake the Peak: %s", exc)
 
     def _clean_fields(self, total: Any = None) -> dict[str, Any]:
         if total is None:
@@ -996,6 +1167,8 @@ class OmaPuffcoDaemon:
         self.battery_saver = bool(enable)
         if not self.battery_saver:
             self._cancel_saver_sleep()
+            if self._resting:
+                self._wake_soon()
         cfg = load_config()
         cfg["battery_saver"] = self.battery_saver
         save_config(cfg)
@@ -1012,6 +1185,8 @@ class OmaPuffcoDaemon:
 
     async def handle(self, cmd: str, args: dict) -> Any:
         args = args or {}
+        if self._resting and cmd not in LOCAL_COMMANDS:
+            await self._wake()
         if cmd == "ping":
             return {"version": __version__, "pid": os.getpid()}
         if cmd == "scan":
@@ -1035,6 +1210,8 @@ class OmaPuffcoDaemon:
                 self._last_watch = time.monotonic()
                 if not was_watching:
                     self._poll_wake.set()
+                if self._resting:
+                    self._wake_soon()
             self.status["telemetry"] = history.get_stats()
             return self.status
         if cmd == "refresh":
@@ -1259,6 +1436,8 @@ class OmaPuffcoDaemon:
                 try:
                     # A full log read takes minutes; holding the command lock
                     # for it would leave Heat/Stop unresponsive meanwhile.
+                    if cmd in ("sync_usage", "faults") and self._resting:
+                        await self._wake()
                     if cmd == "sync_usage":
                         result = await self._sync_usage()
                     elif cmd == "faults":
@@ -1336,6 +1515,10 @@ class OmaPuffcoDaemon:
 
     async def close(self) -> None:
         self._want_connected = False
+        self._resting = False
+        for task in (self._rest_task, self._wake_task):
+            if task:
+                task.cancel()
         if self._recap_task:
             self._recap_task.cancel()
         self._stop_poll()
