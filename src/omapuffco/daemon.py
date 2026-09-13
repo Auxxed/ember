@@ -87,6 +87,11 @@ IDLE_SLEEP_S = 600.0
 # Bluetooth link keeps its radio busy. So battery saver rests the Peak by
 # letting go of it, and checks in this often for the battery and new dabs.
 REST_CHECK_S = 900.0
+# Edits to a heat profile re-read just the profiles once taps stop for this long.
+PROFILE_REFRESH_SETTLE_S = 0.8
+# Answered from what the daemon already knows, so they never queue behind a
+# slow Bluetooth command.
+LOCK_FREE_COMMANDS = frozenset({"ping", "status"})
 # Commands that never touch the Peak, so they leave a resting one alone.
 LOCAL_COMMANDS = frozenset(
     {
@@ -245,6 +250,8 @@ class OmaPuffcoDaemon:
         self._checking_in = False
         self._rest_task: Optional[asyncio.Task] = None
         self._wake_task: Optional[asyncio.Task] = None
+        self._profiles_dirty_at = 0.0
+        self._profile_refresh_task: Optional[asyncio.Task] = None
         self._clean_serial: Optional[str] = None
         self._load_clean(load_config().get("last_serial"))
         self._server: Optional[asyncio.AbstractServer] = None
@@ -908,6 +915,50 @@ class OmaPuffcoDaemon:
         except Exception as exc:
             log.warning("Couldn't wake the Peak: %s", exc)
 
+    def _patch_profile(self, index: Any, **fields: Any) -> None:
+        """Show an edit straight away; the profile re-read that follows confirms it."""
+        if index is None:
+            index = self.status.get("current_profile")
+        for profile in self.status.get("profiles") or []:
+            try:
+                if int(profile.get("index")) == int(index):
+                    profile.update(fields)
+                    return
+            except (TypeError, ValueError):
+                continue
+
+    def _refresh_profiles_soon(self) -> dict[str, Any]:
+        """Re-read only the heat profiles, once a run of edits settles and off the
+        command queue. Re-reading the whole Peak after every tap held the queue
+        for seconds, and the panel's status checks timed out behind it."""
+        self._profiles_dirty_at = time.monotonic()
+        if not self._profile_refresh_task or self._profile_refresh_task.done():
+            self._profile_refresh_task = asyncio.create_task(self._refresh_profiles_when_settled())
+        return self.status
+
+    async def _refresh_profiles_when_settled(self) -> None:
+        while True:
+            wait = PROFILE_REFRESH_SETTLE_S - (time.monotonic() - self._profiles_dirty_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+                continue
+            dev = self.device
+            if not dev or not dev.is_connected:
+                return
+            started = self._profiles_dirty_at
+            try:
+                profiles = [await dev.snapshot_profile(i) for i in range(PROFILE_COUNT)]
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("Profile refresh failed: %s", exc)
+                return
+            if self._profiles_dirty_at != started:
+                continue  # more edits landed mid-read; read again once they settle
+            self.status["profiles"] = profiles
+            await self._broadcast_event("status", self.status)
+            return
+
     def _clean_fields(self, total: Any = None) -> dict[str, Any]:
         if total is None:
             total = self.status.get("total_dabs")
@@ -1356,7 +1407,8 @@ class OmaPuffcoDaemon:
         if cmd == "set_profile_name":
             index = _validate_index(args)
             await dev.set_profile_name(index, str(args["name"]))
-            return await self.handle("refresh", {})
+            self._patch_profile(index, name=str(args["name"]))
+            return self._refresh_profiles_soon()
         if cmd == "set_profile_temp":
             index = _validate_index(args)
             if "celsius" in args:
@@ -1364,13 +1416,16 @@ class OmaPuffcoDaemon:
             else:
                 fahrenheit = float(args["fahrenheit"])
             fahrenheit = _clamp(fahrenheit, MIN_TEMP_F, MAX_TEMP_F)
-            await dev.set_profile_temp_c(index, PuffcoUtils.f_to_c(fahrenheit))
-            return await self.handle("refresh", {})
+            celsius = PuffcoUtils.f_to_c(fahrenheit)
+            await dev.set_profile_temp_c(index, celsius)
+            self._patch_profile(index, temp_c=round(celsius, 1), temp_f=PuffcoUtils.c_to_f(celsius))
+            return self._refresh_profiles_soon()
         if cmd == "set_profile_time":
             index = _validate_index(args)
             seconds = _clamp(float(args["seconds"]), MIN_TIME_S, MAX_TIME_S)
             await dev.set_profile_time(index, seconds)
-            return await self.handle("refresh", {})
+            self._patch_profile(index, time=int(round(seconds)))
+            return self._refresh_profiles_soon()
         if cmd == "set_profile_vapor":
             index = _validate_index(args)
             if "name" in args:
@@ -1378,26 +1433,32 @@ class OmaPuffcoDaemon:
             else:
                 level = snap_vapor(float(args["level"]))
             await dev.set_profile_vapor(index, level)
-            return await self.handle("refresh", {})
+            fields: dict[str, Any] = {"vapor_level": level}
+            if "name" in args:
+                fields["vapor"] = str(args["name"]).lower()
+            self._patch_profile(index, **fields)
+            return self._refresh_profiles_soon()
         if cmd == "set_profile_boost":
             index = _validate_index(args)
             if "temp_f" in args:
-                await dev.set_profile_boost_temp_f(
-                    index, _clamp(float(args["temp_f"]), MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F)
-                )
+                boost_temp = _clamp(float(args["temp_f"]), MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F)
+                await dev.set_profile_boost_temp_f(index, boost_temp)
+                self._patch_profile(index, boost_temp_f=round(boost_temp, 1))
             if "seconds" in args:
-                await dev.set_profile_boost_time(
-                    index, _clamp(float(args["seconds"]), MIN_BOOST_TIME_S, MAX_BOOST_TIME_S)
-                )
-            return await self.handle("refresh", {})
+                boost_time = _clamp(float(args["seconds"]), MIN_BOOST_TIME_S, MAX_BOOST_TIME_S)
+                await dev.set_profile_boost_time(index, boost_time)
+                self._patch_profile(index, boost_time=round(boost_time, 1))
+            return self._refresh_profiles_soon()
         if cmd == "set_profile_color":
             index = args.get("index")
             if index is not None:
                 index = _validate_index({"index": index})
-            await dev.set_profile_solid_color(index, str(args["hex"]))
+            hex_color = str(args["hex"])
+            await dev.set_profile_solid_color(index, hex_color)
             # The colour preview lights the lantern.
             self._set_lantern(True)
-            return await self.handle("refresh", {})
+            self._patch_profile(index, color=("#" + hex_color.lstrip("#")).lower())
+            return self._refresh_profiles_soon()
         if cmd == "set_stealth":
             enable = bool(args.get("enable"))
             await dev.set_stealth_mode(enable)
@@ -1415,8 +1476,12 @@ class OmaPuffcoDaemon:
             await dev.factory_reset()
             return {"ok": True}
         if cmd == "set_device_name":
-            await dev.set_device_name(str(args["name"]))
-            return await self.handle("refresh", {})
+            name = str(args["name"])
+            await dev.set_device_name(name)
+            # The Peak keeps the first 32 bytes.
+            self.status["device_name"] = name.encode("utf-8")[:32].decode("utf-8", "ignore")
+            await self._broadcast_event("status", self.status)
+            return self.status
 
         raise ValueError(f"Unknown command: {cmd}")
 
@@ -1445,10 +1510,13 @@ class OmaPuffcoDaemon:
                         result = await self._sync_usage()
                     elif cmd == "faults":
                         result = await self._read_faults()
+                    elif cmd in LOCK_FREE_COMMANDS:
+                        # The bar and panel ask every few seconds; they must not
+                        # wait behind a Bluetooth command.
+                        result = await self.handle(str(cmd), args)
                     else:
                         async with self._cmd_lock:
                             result = await self.handle(str(cmd), args)
-                    await self._send(writer, {"id": req_id, "ok": True, "result": result})
                 except Exception as exc:
                     log.exception("command %s failed", cmd)
                     err = str(exc) or exc.__class__.__name__
@@ -1461,6 +1529,11 @@ class OmaPuffcoDaemon:
                             "trace": traceback.format_exc() if self.debug else None,
                         },
                     )
+                    continue
+                # Outside the try: a client that stopped waiting (a killed
+                # `omapuffco waybar`, the panel's stall timer) isn't a failed
+                # command, and its ConnectionError ends this client quietly below.
+                await self._send(writer, {"id": req_id, "ok": True, "result": result})
         except (ConnectionError, asyncio.IncompleteReadError):
             # The client went away mid-reply, e.g. a stalled `omapuffco waybar` that got killed.
             pass
@@ -1519,7 +1592,7 @@ class OmaPuffcoDaemon:
     async def close(self) -> None:
         self._want_connected = False
         self._resting = False
-        for task in (self._rest_task, self._wake_task):
+        for task in (self._rest_task, self._wake_task, self._profile_refresh_task):
             if task:
                 task.cancel()
         if self._recap_task:
