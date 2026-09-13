@@ -17,6 +17,8 @@ class TestConfig:
         loaded = paths.load_config()
         assert loaded["auto_connect"] is True
         assert loaded["battery_saver"] is False
+        assert loaded["clean_every"] == 30
+        assert loaded["clean_at_total"] is None
 
     def test_missing_file_yields_defaults(self):
         assert paths.load_config() == paths.DEFAULTS

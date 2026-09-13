@@ -3,8 +3,8 @@
 [![tests](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/omapuffco/actions/workflows/tests.yml)
 
 Puffco Peak Pro controls for the [Omarchy](https://omarchy.org/) bar: chamber
-temperature and battery at a glance, heat and profile controls, lantern and
-mood lights, and usage stats read straight from the device.
+temperature and battery at a glance, heat and profile controls, LED colors,
+and usage stats read straight from the device.
 
 OmaPuffco is unofficial and not affiliated with Puffco. It speaks the
 reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
@@ -67,16 +67,18 @@ removal.
   refreshes.
 - **Control** — Heat, Boost and Stop, with a countdown ring while the Peak
   heats up and during the session; battery saver (puts the Peak to sleep 30
-  seconds after a session ends, turning the lantern off first); the four heat profiles (click one to
+  seconds after a session ends, turning the lantern off first); a chamber-clean
+  reminder (every 10–100 dabs); the four heat profiles (click one to
   select it, click a value to type it, or nudge it with − and +); vapor level;
   and boost temperature and time.
 - **Lights** — LED on/off, brightness, stealth mode, the selected
-  profile's color and animation, and the Connect app's mood presets.
+  profile's LED color.
 - **Usage** — today, this week, this month and lifetime counts, a daily chart,
   streaks, your peak hour, and average session length and temperature.
 - **Device** — rename the Peak; model, chamber, battery, firmware, serial and
   uptime; the fault log of heater, battery and pairing problems; sleep or
-  power off.
+  power off. **Tips** has the factory heat presets (490 / 510 / 530 / 545°F)
+  and a short care list.
 
 ### Where the usage numbers come from
 
@@ -101,8 +103,11 @@ omapuffco heat start|stop|boost
 omapuffco profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
 omapuffco lantern on
 omapuffco brightness 160
+omapuffco color '#ff6a1a' --index 0  # a profile's LED color
 omapuffco stealth on
 omapuffco saver on                 # sleep 30 s after each session
+omapuffco clean --every 30         # remind after N dabs (10–100)
+omapuffco clean done               # reset the cleaning countdown
 omapuffco stats                    # today / week / month / year / lifetime
 omapuffco sync                     # pull usage history from the Peak's log
 omapuffco faults                   # faults the Peak recorded

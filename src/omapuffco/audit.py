@@ -25,11 +25,12 @@ class Entry:
     index: int
     ts: int
     code: int
+    raw: bytes = b""
 
 
 def parse_entry(index: int, raw: bytes) -> Entry:
     ts, code = struct.unpack_from("<IB", raw)
-    return Entry(index=index, ts=ts, code=code)
+    return Entry(index=index, ts=ts, code=code, raw=bytes(raw))
 
 
 def place(entry: Entry, last_boot: int | None, device_clock: int, host_now: float) -> float | None:
@@ -62,5 +63,13 @@ def sessions(entries: list[Entry], device_clock: int, host_now: float) -> list[d
         ts = place(e, last_boot, device_clock, host_now)
         if ts is None:
             continue
-        found.append({"index": e.index, "ts": ts})
+        session: dict = {"index": e.index, "ts": ts}
+        # Reached-temperature entries carry the firmware's preheat estimate
+        # and the real preheat time, in centiseconds at offsets 10 and 12.
+        if len(e.raw) >= 14:
+            estimate, actual = struct.unpack_from("<HH", e.raw, 10)
+            if estimate and actual:
+                session["preheat_estimate_s"] = estimate / 100
+                session["preheat_s"] = actual / 100
+        found.append(session)
     return found

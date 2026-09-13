@@ -19,6 +19,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.backends.device import BLEDevice
 
 from .codec import decode_puffco_json, first_color, hexify
+from .lights import solid_color_payload
 from .constants import (
     CHAMBER_LABELS,
     CHARGE_SOURCE_LABELS,
@@ -117,6 +118,9 @@ class PuffcoBLE:
         self._pairing_agent = None
         self._write_fd: Optional[int] = None
         self._write_bus = None
+        # Largest single Lorax message; lowered to the link's ATT MTU and the
+        # Peak's reported limit once connected.
+        self._max_message = 125
         if debug:
             logging.getLogger("puffcoble").setLevel(logging.DEBUG)
 
@@ -290,6 +294,8 @@ class PuffcoBLE:
                 LoraxOpCodes.GET_LIMITS, b"", timeout=5.0, log_msg="GetLimits"
             )
             log.info("Lorax limits %s", limits.hex())
+            if len(limits) >= 2:
+                self._max_message = min(self._max_message, struct.unpack_from("<H", limits)[0])
         except Exception as exc:
             log.warning("GetLimits failed: %r — continuing with auth", exc)
         await self.auth_device()
@@ -470,6 +476,9 @@ class PuffcoBLE:
         self._write_bus = bus
         self._write_fd = int(fds[0])
         mtu = reply.body[1] if len(reply.body) > 1 else "?"
+        if isinstance(mtu, int) and mtu > 3:
+            # One write must fit a single ATT packet (MTU minus its 3-byte header).
+            self._max_message = min(self._max_message, mtu - 3)
         log.info("Lorax command write fd %s mtu %s", self._write_fd, mtu)
 
     async def run_command(
@@ -642,11 +651,15 @@ class PuffcoBLE:
                 raise RuntimeError(f"read_bytes_all exceeded cap of {cap} bytes")
         return bytes(out)
 
-    async def write_cbor_full(self, path: str, obj: dict, chunk: int = 160) -> None:
+    async def write_cbor_full(self, path: str, obj: dict) -> None:
         blob = cbor2.dumps(hexify(obj), canonical=True)
-        # One-shot replace when it fits: a half-written pikaled2 is what
-        # made the Peak preview factory green until later chunks arrived.
-        if len(blob) <= 250:
+        # Every Lorax message has to fit one BLE packet (MTU 131 on a Peak Pro
+        # link). A larger write is dropped without a reply, which is how colour
+        # and mood writes used to time out.
+        room = self._max_message - (6 + len(path.encode("utf-8")) + 1)
+        if room <= 0:
+            raise LoraxError(f"Path too long to write: {path}")
+        if len(blob) <= room:
             written = False
             for flags in (1, 4, 0):
                 try:
@@ -655,27 +668,27 @@ class PuffcoBLE:
                     break
                 except LoraxError:
                     continue
-            if written:
-                # Firmware ignores truncate flags, so a shorter solid
-                # payload used to leave the old pikaled2 tail (factory
-                # green) sitting in the lantern file.
+            if not written:
+                await self.write_short(path, 0, 0, blob)
+        else:
+            offset = 0
+            flags = 1
+            while offset < len(blob):
+                piece = blob[offset : offset + room]
                 try:
-                    await self.write_short(path, len(blob), 0, b"\x00" * 64)
+                    await self.write_short(path, offset, flags, piece)
                 except LoraxError:
-                    pass
-                return
-        offset = 0
-        flags = 1
-        while offset < len(blob):
-            piece = blob[offset : offset + chunk]
-            try:
-                await self.write_short(path, offset, flags, piece)
-            except LoraxError:
-                if flags == 0:
-                    raise
-                await self.write_short(path, offset, 0, piece)
-            offset += len(piece)
-            flags = 0
+                    if flags == 0:
+                        raise
+                    await self.write_short(path, offset, 0, piece)
+                offset += len(piece)
+                flags = 0
+        # The firmware ignores truncate flags, so a shorter payload would leave
+        # the previous one's tail behind it in the file.
+        try:
+            await self.write_short(path, len(blob), 0, b"\x00" * min(64, room))
+        except LoraxError:
+            pass
 
     async def _read_and_decode(self, path: str) -> str:
         raw = await self.read_short(path, 0, 125)
@@ -910,11 +923,7 @@ class PuffcoBLE:
     async def set_profile_solid_color(self, index: Optional[int], hex_color: str) -> None:
         if not hex_color.startswith("#"):
             hex_color = f"#{hex_color}"
-        payload = {"lamp": {"name": "solid", "param": {"color": [hex_color]}}}
-        await self.set_profile_colour(index, colour=payload)
-
-    async def set_profile_mood(self, index: Optional[int], payload: dict) -> None:
-        await self.set_profile_colour(index, colour=payload)
+        await self.set_profile_colour(index, colour=solid_color_payload(hex_color))
 
     async def get_profile_name(self, index: Optional[int] = None) -> str:
         if index is None:

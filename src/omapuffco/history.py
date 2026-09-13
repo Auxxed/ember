@@ -9,6 +9,7 @@ and still supply per-session temperature, duration and color.
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -161,20 +162,45 @@ def record_device_sessions(sessions: list[dict], *, last_index: int, serial: str
     known = data.get("device_sessions") or []
     if data.get("device_log_serial") not in (None, serial):
         known = []
-    seen = {int(s["index"]) for s in known}
-    fresh = [
-        {"index": int(s["index"]), "ts": float(s["ts"])}
-        for s in sessions
-        if int(s["index"]) not in seen
-    ]
+    by_index = {int(s["index"]): s for s in known}
+    added = 0
+    for s in sessions:
+        index = int(s["index"])
+        timing = {k: float(s[k]) for k in PREHEAT_KEYS if s.get(k)}
+        if index in by_index:
+            # A re-read fills in preheat timing on sessions stored before it was kept.
+            by_index[index].update(timing)
+        else:
+            by_index[index] = {"index": index, "ts": float(s["ts"]), **timing}
+            added += 1
     cutoff = time.time() - RETENTION_DAYS * 86400
     data["device_sessions"] = sorted(
-        (s for s in known + fresh if s["ts"] >= cutoff), key=lambda s: s["index"]
+        (s for s in by_index.values() if s["ts"] >= cutoff), key=lambda s: s["index"]
     )
     data["device_log_index"] = int(last_index)
     data["device_log_serial"] = serial
     _save(data)
-    return len(fresh)
+    return added
+
+
+PREHEAT_KEYS = ("preheat_s", "preheat_estimate_s")
+
+
+def preheat_scale(samples: int = 20) -> float | None:
+    """How much longer real preheats run than the Peak's own estimate.
+
+    The live preheat length the Peak reports is that estimate, which on AW
+    firmware is roughly half the real time; the median over recent sessions
+    corrects it for this particular Peak.
+    """
+    ratios = [
+        s["preheat_s"] / s["preheat_estimate_s"]
+        for s in (_load().get("device_sessions") or [])
+        if s.get("preheat_s") and s.get("preheat_estimate_s")
+    ]
+    if not ratios:
+        return None
+    return float(statistics.median(ratios[-samples:]))
 
 
 def _counted_events(data: dict[str, Any]) -> list[dict]:

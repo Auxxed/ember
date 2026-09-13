@@ -86,3 +86,28 @@ class TestDeviceSessionsInStats:
         history.record_device_sessions([{"index": 1, "ts": now - 900}], last_index=1, serial="B")
         assert history.get_stats()["tracked_total"] == 2
         assert history.device_log_state() == {"index": 1, "serial": "B"}
+
+
+class TestPreheatTiming:
+    def test_reached_temp_entries_carry_estimate_and_real_preheat(self):
+        raw = struct.pack("<IB", 900, audit.REACHED_TEMP) + bytes(5) + struct.pack("<HH", 1439, 2771) + bytes(2)
+        found = audit.sessions([audit.parse_entry(7, raw)], device_clock=1000, host_now=NOW)
+        assert found[0]["preheat_estimate_s"] == 14.39
+        assert found[0]["preheat_s"] == 27.71
+
+    def test_resync_fills_in_timing_and_scale_is_the_median_ratio(self):
+        now = time.time()
+        history.record_device_sessions([{"index": 1, "ts": now - 60}], last_index=1, serial="A")
+        assert history.preheat_scale() is None
+        added = history.record_device_sessions(
+            [
+                {"index": 1, "ts": now - 60, "preheat_estimate_s": 15.0, "preheat_s": 27.0},
+                {"index": 2, "ts": now - 30, "preheat_estimate_s": 16.0, "preheat_s": 32.0},
+                {"index": 3, "ts": now - 10, "preheat_estimate_s": 10.0, "preheat_s": 19.0},
+            ],
+            last_index=3,
+            serial="A",
+        )
+        assert added == 2
+        assert history.get_stats()["tracked_total"] == 3
+        assert history.preheat_scale() == 1.9

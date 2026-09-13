@@ -20,6 +20,9 @@ DEFAULTS: dict[str, Any] = {
     "notify_low_battery": True,
     "poll_interval": 1.5,
     "battery_saver": False,
+    "clean_every": 30,
+    "clean_at_total": None,
+    "clean_notified": False,
 }
 
 

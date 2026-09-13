@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import time
 import traceback
 from pathlib import Path
@@ -17,7 +18,6 @@ from . import audit, faults, history
 from .ble import LoraxError, PuffcoBLE
 from .constants import PROFILE_COUNT, OperatingState
 from .paths import load_config, log_path, save_config, socket_path
-from .moods import mood_payload, resolve_mood, resolve_style
 from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
@@ -60,6 +60,31 @@ MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F = 0.0, 36.0
 MIN_BOOST_TIME_S, MAX_BOOST_TIME_S = 0.0, 60.0
 # Lantern auto-off. Firmware default on this Peak is 7200s (2h).
 MIN_LANTERN_S, MAX_LANTERN_S = 60.0, 28800.0
+# Chamber-clean reminder. Steps of 10, default one charge (~30 dabs).
+CLEAN_EVERY_MIN, CLEAN_EVERY_MAX, CLEAN_EVERY_STEP = 10, 100, 10
+DEFAULT_CLEAN_EVERY = 30
+
+
+def snap_clean_every(value: Any) -> int:
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        n = DEFAULT_CLEAN_EVERY
+    n = int(round(n / CLEAN_EVERY_STEP) * CLEAN_EVERY_STEP)
+    return max(CLEAN_EVERY_MIN, min(CLEAN_EVERY_MAX, n))
+
+
+def clean_remaining(total: Any, last: Any, every: int) -> int:
+    """Dabs left until the reminder. Full interval until a baseline exists."""
+    try:
+        every_n = int(every)
+    except (TypeError, ValueError):
+        every_n = DEFAULT_CLEAN_EVERY
+    try:
+        used = max(0, int(total) - int(last))
+    except (TypeError, ValueError):
+        return every_n
+    return max(0, every_n - used)
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -84,6 +109,8 @@ class OmaPuffcoDaemon:
         self._sync_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self._fault_lock = asyncio.Lock()
+        self.preheat_scale = history.preheat_scale()
+        self._preheat_backfilled = False
         self._fault_cache: dict[str, Any] = {}
         self._poll_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
@@ -97,9 +124,14 @@ class OmaPuffcoDaemon:
         self.battery_saver = _as_bool(load_config().get("battery_saver"))
         self._last_user_cmd = float("-inf")
         self._saver_sleep_task: Optional[asyncio.Task] = None
+        cfg = load_config()
+        self.clean_every = snap_clean_every(cfg.get("clean_every"))
+        self.clean_at_total = cfg.get("clean_at_total")
+        self.clean_notified = _as_bool(cfg.get("clean_notified"))
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.status["battery_saver"] = self.battery_saver
+        self.status.update(self._clean_fields())
 
     @staticmethod
     def _empty_status() -> dict[str, Any]:
@@ -130,6 +162,9 @@ class OmaPuffcoDaemon:
             "lantern": False,
             "lantern_timeout": None,
             "battery_saver": False,
+            "clean_every": DEFAULT_CLEAN_EVERY,
+            "clean_remaining": DEFAULT_CLEAN_EVERY,
+            "clean_due": False,
             "birthday": None,
             "birthday_label": "",
             "dabs_remaining": 0,
@@ -168,6 +203,14 @@ class OmaPuffcoDaemon:
         snap["lantern"] = self.lantern
         snap["brightness"] = dict(self.brightness)
         snap["battery_saver"] = self.battery_saver
+        snap.update(self._clean_fields(snap.get("total_dabs", self.status.get("total_dabs"))))
+        if (
+            snap.get("operating_state_id") == int(OperatingState.HEAT_CYCLE_PREHEAT)
+            and snap.get("state_total_s")
+            and self.preheat_scale
+        ):
+            # The Peak reports its own preheat estimate, which runs short.
+            snap["state_total_s"] = float(snap["state_total_s"]) * self.preheat_scale
         return snap
 
     def _apply_snapshot(self, snap: dict[str, Any]) -> None:
@@ -177,8 +220,10 @@ class OmaPuffcoDaemon:
         history.record_total(total)
         if total is None:
             snap["total_dabs"] = self.status.get("total_dabs") or 0
+        self._baseline_clean(snap.get("total_dabs"))
         self.status.update(snap)
         self.status["telemetry"] = history.get_stats()
+        self.status.update(self._clean_fields())
 
     def _on_ble_drop(self) -> None:
         log.warning("BLE link dropped")
@@ -280,7 +325,7 @@ class OmaPuffcoDaemon:
             }
         )
         self._start_poll()
-        await self._broadcast_event("status", self.status)
+        await self._refresh_clean(self.status.get("total_dabs"), notify=True)
         self._spawn(self._sync_usage_safe())
         return self.status
 
@@ -293,7 +338,14 @@ class OmaPuffcoDaemon:
             state = history.device_log_state()
             start = begin + 1
             # A stored index at or past the ring's end means the log was cleared.
-            if state.get("serial") == serial and state.get("index") is not None and int(state["index"]) < end:
+            # Re-read the whole ring once when no stored session has preheat timing yet.
+            backfill = self.preheat_scale is None and not self._preheat_backfilled
+            if (
+                not backfill
+                and state.get("serial") == serial
+                and state.get("index") is not None
+                and int(state["index"]) < end
+            ):
                 start = max(start, int(state["index"]) + 1)
             entries = [
                 audit.parse_entry(i, await dev.read_log_entry(i)) for i in range(start, end)
@@ -301,6 +353,8 @@ class OmaPuffcoDaemon:
             clock = await dev.get_device_clock()
             found = audit.sessions(entries, clock, time.time())
             added = history.record_device_sessions(found, last_index=max(end - 1, start - 1), serial=serial)
+            self._preheat_backfilled = True
+            self.preheat_scale = history.preheat_scale()
             self.status["telemetry"] = history.get_stats()
             await self._broadcast_event("status", self.status)
             log.info("Usage sync: read %d log entries, %d new sessions", len(entries), added)
@@ -355,6 +409,7 @@ class OmaPuffcoDaemon:
             self.device = None
         self.status = self._empty_status()
         self.status["battery_saver"] = self.battery_saver
+        self.status.update(self._clean_fields())
         await self._broadcast_event("status", self.status)
         return self.status
 
@@ -391,6 +446,12 @@ class OmaPuffcoDaemon:
                     if prev_state != new_state and new_state == int(OperatingState.HEAT_CYCLE_ACTIVE):
                         history.record_cycle(**self._cycle_meta())
                         self.status["telemetry"] = history.get_stats()
+                        try:
+                            counted = int(self.status.get("total_dabs") or 0) + 1
+                        except (TypeError, ValueError):
+                            counted = 0
+                        self.status["total_dabs"] = counted
+                        await self._refresh_clean(counted, notify=True)
                         self._spawn(self._sync_usage_safe(delay=5.0))
                         await self._broadcast_event(
                             "notify",
@@ -465,6 +526,79 @@ class OmaPuffcoDaemon:
         except Exception as exc:
             log.warning("Battery saver sleep failed: %s", exc)
 
+    def _clean_fields(self, total: Any = None) -> dict[str, Any]:
+        if total is None:
+            total = self.status.get("total_dabs")
+        remaining = clean_remaining(total, self.clean_at_total, self.clean_every)
+        return {
+            "clean_every": self.clean_every,
+            "clean_remaining": remaining,
+            "clean_due": remaining <= 0,
+        }
+
+    def _save_clean(self) -> None:
+        cfg = load_config()
+        cfg["clean_every"] = self.clean_every
+        cfg["clean_at_total"] = self.clean_at_total
+        cfg["clean_notified"] = self.clean_notified
+        save_config(cfg)
+
+    def _baseline_clean(self, total: Any) -> None:
+        if self.clean_at_total is not None:
+            return
+        try:
+            n = int(total)
+        except (TypeError, ValueError):
+            return
+        if n < 0:
+            return
+        self.clean_at_total = n
+        self.clean_notified = False
+        self._save_clean()
+
+    async def _refresh_clean(self, total: Any, *, notify: bool = False) -> dict[str, Any]:
+        self._baseline_clean(total)
+        fields = self._clean_fields(total)
+        self.status.update(fields)
+        if fields["clean_remaining"] > 0 and self.clean_notified:
+            self.clean_notified = False
+            self._save_clean()
+        if notify and fields["clean_due"] and not self.clean_notified:
+            self.clean_notified = True
+            self._save_clean()
+            await self._notify_clean()
+        await self._broadcast_event("status", self.status)
+        return fields
+
+    async def _notify_clean(self) -> None:
+        title = "Peak Pro needs a clean"
+        body = "Swab the chamber, then mark it cleaned in the panel."
+        await self._broadcast_event("notify", {"title": title, "body": body})
+        try:
+            subprocess.Popen(
+                ["notify-send", "-a", "OmaPuffco", "-u", "normal", title, body],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            pass
+
+    async def _set_clean_every(self, dabs: Any) -> dict[str, Any]:
+        self.clean_every = snap_clean_every(dabs)
+        self._save_clean()
+        return await self._refresh_clean(self.status.get("total_dabs"))
+
+    async def _mark_cleaned(self) -> dict[str, Any]:
+        try:
+            total = int(self.status.get("total_dabs") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        self.clean_at_total = max(0, total)
+        self.clean_notified = False
+        self._save_clean()
+        return await self._refresh_clean(total)
+
     async def _set_battery_saver(self, enable: bool) -> dict[str, Any]:
         self.battery_saver = bool(enable)
         if not self.battery_saver:
@@ -521,9 +655,15 @@ class OmaPuffcoDaemon:
             save_config(cfg)
             if "battery_saver" in args:
                 await self._set_battery_saver(_as_bool(args.get("battery_saver")))
+            if "clean_every" in args:
+                await self._set_clean_every(args.get("clean_every"))
             return load_config()
         if cmd == "set_battery_saver":
             return await self._set_battery_saver(_as_bool(args.get("enable")))
+        if cmd == "set_clean_every":
+            return await self._set_clean_every(args.get("dabs"))
+        if cmd == "mark_cleaned":
+            return await self._mark_cleaned()
         if cmd == "peek":
             path = str(args["path"])
             size = int(args.get("size") or 12)
@@ -651,36 +791,6 @@ class OmaPuffcoDaemon:
             await dev.set_profile_solid_color(index, str(args["hex"]))
             self.lantern = True
             self.status["lantern"] = True
-            return await self.handle("refresh", {})
-        if cmd == "set_animation":
-            colors = args.get("colors") or [args.get("hex") or "#ffffff"]
-            index = args.get("index")
-            if index is not None:
-                index = _validate_index({"index": index})
-            style = resolve_style(str(args.get("anim", "solid")))
-            if style["kind"] is None:
-                await dev.set_profile_solid_color(index, colors[0])
-            else:
-                await dev.set_profile_mood(
-                    index,
-                    mood_payload(style["kind"], list(colors), tempo=float(args.get("tempo", 0.5))),
-                )
-            self.lantern = True
-            self.status["lantern"] = True
-            return await self.handle("refresh", {})
-        if cmd == "set_mood":
-            mood = resolve_mood(str(args["name"]))
-            index = args.get("index")
-            if index is not None:
-                index = _validate_index({"index": index})
-            if mood["kind"] is None:
-                await dev.set_profile_solid_color(index, mood["colors"][0])
-            else:
-                await dev.set_profile_mood(index, mood_payload(mood["kind"], mood["colors"]))
-            if args.get("lantern", True):
-                await dev.start_lantern()
-                self.lantern = True
-                self.status["lantern"] = True
             return await self.handle("refresh", {})
         if cmd == "set_stealth":
             enable = bool(args.get("enable"))

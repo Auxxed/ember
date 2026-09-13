@@ -74,10 +74,12 @@ Panel {
       pendingStealth = undefined
       pendingLantern = undefined
       pendingSaver = undefined
+      pendingCleanEvery = -1
       pendingBrightness = -1
       pendingDeviceName = ""
       confirmPowerOff = false
       page = "control"
+      deviceTab = "info"
     }
   }
 
@@ -277,10 +279,9 @@ Panel {
   property var pendingStealth: undefined
   property var pendingLantern: undefined
   property var pendingSaver: undefined
+  property int pendingCleanEvery: -1
   property int pendingBrightness: -1
   property string page: "control"
-  property string activeMood: ""
-  property string activeStyle: ""
   property string pendingDeviceName: ""
 
   readonly property bool onControl: page === "control"
@@ -295,63 +296,47 @@ Panel {
     { "value": "device", "label": "Device" }
   ]
 
-  readonly property var exclusiveMoods: [
-    { "id": "puffcon", "label": "Puffcon", "colors": ["#ff4fa3", "#3b9eff"] },
-    { "id": "july4", "label": "4th of July", "colors": ["#ff4d4d", "#ffffff", "#3b9eff"] },
-    { "id": "candle", "label": "Candle", "colors": ["#ffb07a", "#e8955a"] },
-    { "id": "hologram", "label": "Hologram", "colors": ["#7c3aed", "#3b9eff", "#22d3ee"] },
-    { "id": "lupus", "label": "Lupus", "colors": ["#6d28d9", "#c4b5fd"] },
-    { "id": "disco", "label": "Disco", "colors": ["#ff4d4d", "#f6d32d", "#3dd68c", "#3b9eff", "#a855f7", "#ff4fa3"] }
+  property string deviceTab: "info"
+  readonly property bool onDeviceInfo: onDevice && deviceTab === "info"
+  readonly property bool onDeviceTips: onDevice && deviceTab === "tips"
+  readonly property var deviceTabOptions: [
+    { "value": "info", "label": "Info" },
+    { "value": "tips", "label": "Tips" }
   ]
 
-  readonly property var lightStyles: [
-    { "value": "solid", "label": "Solid" },
-    { "value": "fill", "label": "Fill" },
-    { "value": "fade", "label": "Fade" },
-    { "value": "disco", "label": "Disco" },
-    { "value": "split", "label": "Split" },
-    { "value": "spin", "label": "Spin" }
+  // Factory Peak Pro presets (Connect: Blue / Green / Red / White).
+  readonly property var stockHeats: [
+    { "name": "Low", "color": "Blue", "temp_f": 490, "note": "Flavor" },
+    { "name": "Med", "color": "Green", "temp_f": 510, "note": "Balanced" },
+    { "name": "High", "color": "Red", "temp_f": 530, "note": "Vapor" },
+    { "name": "Peak", "color": "White", "temp_f": 545, "note": "Clouds" }
   ]
 
-  function applyMood(id) {
-    activeMood = id
-    activeStyle = ""
-    pendingLantern = true
-    var args = ["omapuffco", "mood", id]
-    if (currentProfile >= 0) {
-      args.push("--index")
-      args.push(String(currentProfile))
-    }
-    runArgv(args)
-  }
+  readonly property var peakTips: [
+    { "title": "Load small", "body": "Rice-grain on the bowl floor, not the walls." },
+    { "title": "Swab while warm", "body": "Dry Q-tip after every hit. Iso only for leftover residue." },
+    { "title": "Iso soak", "body": "90%+ iso, 20 minutes, when it tastes off. Never water in the chamber." },
+    { "title": "Fill glass off the base", "body": "Water just above the perc slots. Empty it overnight." },
+    { "title": "Slow inhale", "body": "Cap snug. Hard pulls cool the bowl and pull reclaim." },
+    { "title": "Sleep it", "body": "Lock or sleep between sessions. Phone app and this panel can't share the Peak." }
+  ]
 
-  function applyStyle(name) {
-    activeStyle = name
-    activeMood = ""
-    pendingLantern = true
-    var hex = activeProfile ? profileSwatch(activeProfile.color) : ""
-    if (hex === "") hex = colorPalette[0]
-    var args = ["omapuffco", "anim", name, "--color", hex]
-    if (currentProfile >= 0) {
-      args.push("--index")
-      args.push(String(currentProfile))
-    }
-    runArgv(args)
-  }
+  readonly property var peakLights: [
+    { "title": "3 white flashes", "body": "No chamber. Reseat it." },
+    { "title": "Red-white", "body": "Chamber error. Iso soak, dry, retry." },
+    { "title": "Solid red", "body": "Overheating. Let it sit." }
+  ]
 
   function applyLightColor(hex) {
     if (currentProfile < 0) return
-    activeMood = ""
     pendingLantern = true
     var updated = {}
     for (var key in pendingColors) updated[key] = pendingColors[key]
     updated[currentProfile] = hex
     pendingColors = updated
-    // Keep the animation already picked. `anim` also paints the live lantern
-    // without reselecting the heat profile (which flashes factory green).
-    var style = activeStyle !== "" ? activeStyle : "solid"
-    activeStyle = style
-    runArgv(["omapuffco", "anim", style, "--color", hex, "--index", String(currentProfile)])
+    // Also paints the live lantern, without reselecting the heat profile
+    // (which flashes factory green over the new colour).
+    runArgv(["omapuffco", "color", hex, "--index", String(currentProfile)])
     clearPendingTimer.restart()
   }
 
@@ -485,6 +470,24 @@ Panel {
   readonly property bool saverOn: pendingSaver !== undefined
     ? pendingSaver === true
     : statusData.battery_saver === true
+  readonly property int cleanEveryMin: 10
+  readonly property int cleanEveryMax: 100
+  readonly property int cleanEveryStep: 10
+  readonly property int cleanEvery: {
+    if (pendingCleanEvery >= 0) return pendingCleanEvery
+    var n = Number(statusData.clean_every)
+    return isFinite(n) && n > 0 ? Math.round(n) : 30
+  }
+  readonly property int cleanRemaining: {
+    var rem = Number(statusData.clean_remaining)
+    if (!isFinite(rem)) rem = cleanEvery
+    if (pendingCleanEvery < 0) return Math.max(0, Math.round(rem))
+    var every = Number(statusData.clean_every)
+    if (!isFinite(every) || every <= 0) every = 30
+    var used = Math.max(0, every - rem)
+    return Math.max(0, pendingCleanEvery - used)
+  }
+  readonly property bool cleanDue: cleanRemaining <= 0
   readonly property int brightnessLevel: {
     if (pendingBrightness >= 0) return pendingBrightness
     var b = statusData.brightness || ({})
@@ -533,6 +536,26 @@ Panel {
     pendingSaver = next
     if (next) pendingLantern = false
     run("omapuffco saver " + (next ? "on" : "off"))
+  }
+
+  function clampCleanEvery(value) {
+    var n = Math.round(Number(value) / cleanEveryStep) * cleanEveryStep
+    return Math.max(cleanEveryMin, Math.min(cleanEveryMax, n))
+  }
+
+  function canStepCleanEvery(delta) {
+    return clampCleanEvery(cleanEvery + delta) !== cleanEvery
+  }
+
+  function stepCleanEvery(delta) {
+    if (!canStepCleanEvery(delta)) return
+    pendingCleanEvery = clampCleanEvery(cleanEvery + delta)
+    commitWriteTimer.restart()
+  }
+
+  function markCleaned() {
+    pendingCleanEvery = -1
+    run("omapuffco clean done")
   }
 
   function setBrightness(value) {
@@ -685,6 +708,8 @@ Panel {
     commitTemps()
     commitTimes()
     commitBoost()
+    if (pendingCleanEvery >= 0)
+      runArgv(["omapuffco", "clean", "--every", String(pendingCleanEvery)])
     clearPendingTimer.restart()
   }
 
@@ -845,6 +870,7 @@ Panel {
       root.pendingStealth = undefined
       root.pendingLantern = undefined
       root.pendingSaver = undefined
+      root.pendingCleanEvery = -1
       root.pendingBrightness = -1
       root.pendingDeviceName = ""
     }
@@ -1118,6 +1144,41 @@ Panel {
                 label: "Sleep 30 s after each session"
                 checked: root.saverOn
                 onToggled: root.toggleSaver()
+              }
+            }
+
+            Section {
+              title: "CLEANING"
+              trailing: root.cleanDue ? "Due" : root.cleanRemaining + " left"
+
+              StepperRow {
+                width: parent.width
+                label: "Remind every"
+                valueText: root.cleanEvery + " dabs"
+                canLower: root.canStepCleanEvery(-root.cleanEveryStep)
+                canRaise: root.canStepCleanEvery(root.cleanEveryStep)
+                onLower: root.stepCleanEvery(-root.cleanEveryStep)
+                onRaise: root.stepCleanEvery(root.cleanEveryStep)
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                text: root.cleanDue
+                  ? "Swab the chamber, then mark it cleaned."
+                  : root.cleanRemaining + " dab" + (root.cleanRemaining === 1 ? "" : "s") + " until the reminder."
+                color: root.cleanDue ? root.urgent : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              ActionButton {
+                width: parent.width
+                label: "Mark cleaned"
+                emphasized: root.cleanDue
+                tint: root.cleanDue ? root.urgent : root.foreground
+                onActivated: root.markCleaned()
               }
             }
 
@@ -1549,7 +1610,7 @@ Panel {
                 width: parent.width
                 textFormat: Text.PlainText
                 wrapMode: Text.WordWrap
-                text: "The color and animation this profile glows with while it heats."
+                text: "The color this profile glows with while it heats."
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -1587,104 +1648,8 @@ Panel {
                 }
               }
 
-              Text {
-                width: parent.width
-                topPadding: Style.space(4)
-                textFormat: Text.PlainText
-                text: "Animation"
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-
-              Segmented {
-                width: parent.width
-                compact: true
-                options: root.lightStyles
-                value: root.activeStyle
-                onPicked: function(value) { root.applyStyle(value) }
-              }
             }
 
-            Section {
-              title: "MOOD PRESETS"
-
-              Grid {
-                id: moodGrid
-                width: parent.width
-                columns: 2
-                rowSpacing: Style.spacing.controlGap
-                columnSpacing: Style.spacing.controlGap
-                readonly property real cellWidth: (width - columnSpacing) / 2
-
-                Repeater {
-                  model: root.exclusiveMoods
-
-                  BorderSurface {
-                    id: moodCard
-                    required property var modelData
-                    readonly property var mood: modelData
-                    readonly property bool picked: root.activeMood === mood.id
-                    width: moodGrid.cellWidth
-                    implicitHeight: Math.max(Style.spacing.controlHeight, moodRow.implicitHeight + Style.spacing.controlPaddingY * 2)
-                    radius: Style.cornerRadius
-                    color: picked ? Style.selectedFillFor(Color.accent, Color.accent)
-                      : moodMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent)
-                      : Style.normalFillFor(root.foreground, Color.accent)
-                    borderSpec: Border.controlSpec(picked ? "selected" : (moodMouse.containsMouse ? "hover-cursor" : "normal"), root.foreground, Color.accent)
-
-                    Row {
-                      id: moodRow
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      anchors.verticalCenter: parent.verticalCenter
-                      anchors.leftMargin: Style.spacing.controlPaddingX
-                      anchors.rightMargin: Style.spacing.controlPaddingX
-                      spacing: Style.spacing.md
-
-                      Row {
-                        id: moodSwatches
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: -Style.space(3)
-
-                        Repeater {
-                          model: moodCard.mood.colors.slice(0, 3)
-                          Rectangle {
-                            required property var modelData
-                            width: Style.space(10)
-                            height: Style.space(10)
-                            radius: width / 2
-                            color: String(modelData)
-                            border.width: 1
-                            border.color: Util.alpha(root.foreground, 0.25)
-                          }
-                        }
-                      }
-
-                      Text {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: moodRow.width - moodSwatches.width - moodRow.spacing
-                        textFormat: Text.PlainText
-                        text: moodCard.mood.label
-                        color: moodCard.picked ? Color.accent : root.foreground
-                        font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall
-                        font.bold: moodCard.picked
-                        elide: Text.ElideRight
-                      }
-                    }
-
-                    MouseArea {
-                      id: moodMouse
-                      anchors.fill: parent
-                      hoverEnabled: true
-                      cursorShape: Qt.PointingHandCursor
-                      onClicked: root.applyMood(moodCard.mood.id)
-                    }
-                  }
-                }
-              }
-            }
           }
 
           // ================================================== Usage
@@ -1894,6 +1859,22 @@ Panel {
             visible: root.onDevice && root.connected
             spacing: Style.spacing.panelGap
 
+            Segmented {
+              width: parent.width
+              compact: true
+              options: root.deviceTabOptions
+              value: root.deviceTab
+              onPicked: function(value) {
+                root.deviceTab = value
+                scroller.contentY = 0
+              }
+            }
+
+            Column {
+              width: parent.width
+              visible: root.onDeviceInfo
+              spacing: Style.spacing.panelGap
+
             Section {
               title: "NAME"
 
@@ -2053,6 +2034,78 @@ Panel {
                   glyph: "\uf011"
                   tint: root.urgent
                   onActivated: root.confirmPowerOff = true
+                }
+              }
+            }
+            }
+
+            Column {
+              width: parent.width
+              visible: root.onDeviceTips
+              spacing: Style.spacing.panelGap
+
+              Section {
+                title: "STOCK HEAT"
+                trailing: "Factory"
+
+                Grid {
+                  width: parent.width
+                  columns: 2
+                  rowSpacing: Style.spacing.controlGap
+                  columnSpacing: Style.spacing.controlGap
+
+                  readonly property real cellWidth: (width - columnSpacing) / 2
+
+                  Repeater {
+                    model: root.stockHeats
+
+                    SummaryCell {
+                      required property var modelData
+                      width: parent.cellWidth
+                      value: root.formatTemp(modelData.temp_f, undefined)
+                      title: modelData.color + " · " + modelData.name
+                    }
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  text: "Green is the everyday setting. Blue keeps flavor; White is clouds."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              Section {
+                title: "CARE"
+
+                Repeater {
+                  model: root.peakTips
+
+                  TipBlock {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    title: String(modelData.title)
+                    body: String(modelData.body)
+                  }
+                }
+              }
+
+              Section {
+                title: "LIGHTS"
+
+                Repeater {
+                  model: root.peakLights
+
+                  TipBlock {
+                    required property var modelData
+                    width: parent ? parent.width : 0
+                    title: String(modelData.title)
+                    body: String(modelData.body)
+                  }
                 }
               }
             }
@@ -2277,6 +2330,34 @@ Panel {
         canTap: stepper.canRaise
         onActivated: stepper.raise()
       }
+    }
+  }
+
+  component TipBlock: Column {
+    id: tip
+
+    property string title: ""
+    property string body: ""
+
+    spacing: Style.space(2)
+
+    Text {
+      width: parent.width
+      textFormat: Text.PlainText
+      text: tip.title
+      color: root.foreground
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+    }
+
+    Text {
+      width: parent.width
+      textFormat: Text.PlainText
+      wrapMode: Text.WordWrap
+      text: tip.body
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
     }
   }
 

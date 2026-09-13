@@ -94,14 +94,15 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
         f"   uptime {data.get('uptime')}{extra}"
     )
     telemetry = data.get("telemetry") or {}
+    clean = ""
+    if data.get("clean_every"):
+        clean = "   clean due" if data.get("clean_due") else f"   clean {data.get('clean_remaining')} left"
+    tracked = ""
+    if telemetry:
+        tracked = f"   ({telemetry.get('today', 0)} today, {telemetry.get('this_month', 0)} this month)"
     print(
         f"  dabs {data.get('total_dabs')} total   ~{data.get('dabs_remaining')} left"
-        f"   {data.get('dabs_per_day')}/day"
-        + (
-            f"   ({telemetry.get('today', 0)} today, {telemetry.get('this_month', 0)} this month)"
-            if telemetry
-            else ""
-        )
+        f"   {data.get('dabs_per_day')}/day{clean}{tracked}"
     )
     current = data.get("current_profile", 0)
     for p in data.get("profiles") or []:
@@ -199,6 +200,10 @@ def print_waybar(data: dict) -> None:
         if temp:
             text = f"{temp}  {battery_text}"
     tooltip = state if not connected else f"{state} · {battery_text} · {temp}".strip(" ·")
+    if connected and data.get("clean_due"):
+        tooltip = f"{tooltip} · clean chamber".strip(" ·")
+        if css == "idle":
+            css, text = "clean", f"clean  {battery_text}"
     print(
         json.dumps(
             {
@@ -261,33 +266,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     prof.add_argument("--boost-temp", type=float, help="Boost Δ temperature in °F (0–36)")
     prof.add_argument("--boost-time", type=float, help="Boost extra seconds (0–60)")
 
-    anim = sub.add_parser("anim")
-    anim.add_argument(
-        "name",
-        choices=[
-            "solid",
-            "fill",
-            "fade",
-            "disco",
-            "split",
-            "spin",
-            "breathing",
-            "rising",
-            "circling",
-            "heat",
-        ],
-    )
-    anim.add_argument("--index", type=int)
-    anim.add_argument("--color", action="append", dest="colors")
-
-    mood = sub.add_parser("mood", help="Exclusive Puffco mood lights")
-    mood.add_argument(
-        "name",
-        nargs="?",
-        help="puffcon, july4, candle, hologram, lupus, disco",
-    )
-    mood.add_argument("--index", type=int)
-    mood.add_argument("--no-lantern", action="store_true")
+    color = sub.add_parser("color", help="Set a heat profile's LED color")
+    color.add_argument("hex", help="#rrggbb")
+    color.add_argument("--index", type=int, help="Profile 0-3 (default: the selected one)")
 
     peek = sub.add_parser("peek", help="Read a Lorax path (debug)")
     peek.add_argument("path")
@@ -301,6 +282,10 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     saver = sub.add_parser("saver", help="Sleep the Peak 30 s after each session, turning the lantern off first")
     saver.add_argument("action", choices=["on", "off"])
+
+    clean = sub.add_parser("clean", help="Chamber-clean reminder after N dabs")
+    clean.add_argument("action", choices=["done"], nargs="?", help="Reset the countdown after you clean")
+    clean.add_argument("--every", type=int, help="Remind every N dabs (10–100, steps of 10)")
 
     name = sub.add_parser("name", help="Rename the Peak")
     name.add_argument("value", nargs="?", help="New device name")
@@ -448,27 +433,8 @@ async def async_main(argv: list[str] | None = None) -> int:
         if editing:
             await call("set_profile", {"index": args.index})
         print_status(await call("status"), raw)
-    elif cmd == "anim":
-        await call(
-            "set_animation",
-            {"anim": args.name, "index": args.index, "colors": args.colors or ["#ffffff"]},
-        )
-        print_status(await call("status"), raw)
-    elif cmd == "mood":
-        if not args.name:
-            from .moods import EXCLUSIVE
-
-            for key, spec in EXCLUSIVE.items():
-                print(f"  {key:<10} {spec['label']}  ({', '.join(spec['colors'])})")
-            return 0
-        await call(
-            "set_mood",
-            {
-                "name": args.name,
-                "index": args.index,
-                "lantern": not args.no_lantern,
-            },
-        )
+    elif cmd == "color":
+        await call("set_profile_color", {"index": args.index, "hex": args.hex})
         print_status(await call("status"), raw)
     elif cmd == "peek":
         print(json.dumps(await call("peek", {"path": args.path, "size": args.size}), indent=2 if raw else None, default=str))
@@ -479,6 +445,21 @@ async def async_main(argv: list[str] | None = None) -> int:
         print_status(await call("status"), raw)
     elif cmd == "saver":
         await call("set_battery_saver", {"enable": args.action == "on"})
+        print_status(await call("status"), raw)
+    elif cmd == "clean":
+        if args.every is not None:
+            await call("set_clean_every", {"dabs": args.every})
+        if args.action == "done":
+            await call("mark_cleaned")
+        if args.every is None and args.action is None:
+            data = await call("status")
+            if raw:
+                print(json.dumps(data, indent=2, default=str))
+            elif data.get("clean_due"):
+                print(f"Clean due  (every {data.get('clean_every')} dabs)")
+            else:
+                print(f"{data.get('clean_remaining')} dabs left  (every {data.get('clean_every')})")
+            return 0
         print_status(await call("status"), raw)
     elif cmd == "name":
         if not args.value:

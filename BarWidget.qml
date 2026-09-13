@@ -115,7 +115,7 @@ BarWidget {
         // its widgets, so that reads as two widgets here — collapse it.
         root.outputText = String(data.text || "").replace(/\s+/g, " ").trim()
         root.outputTooltip = String(data.tooltip || "")
-        root.outputActive = data.class === "preheat" || data.class === "ready"
+        root.outputActive = data.class === "preheat" || data.class === "ready" || data.class === "clean"
         root.outputOffline = data.class === "disconnected"
       }
     }
