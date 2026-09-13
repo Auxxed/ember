@@ -1,4 +1,4 @@
-"""ember — Peak Pro companion CLI. No args launches the GUI."""
+"""ember — Peak Pro companion CLI. No args prints usage."""
 
 from __future__ import annotations
 
@@ -60,17 +60,38 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
             heat = f"   chamber {data.get('heater_temp_c')}°C"
         else:
             heat = f"   chamber {data.get('heater_temp_f')}°F"
+    source = data.get("charge_source") or ""
+    charge = data.get("charge_state") or ""
+    if source and source != "Unplugged" and source not in charge:
+        charge = f"{charge} {source}".strip()
     print(
         f"  {data.get('operating_state')}   battery {data.get('battery')}%"
-        f"  {data.get('charge_state') or ''}{heat}"
+        f"  {charge}{heat}"
     )
+    timeout = data.get("lantern_timeout")
+    lantern = data.get("lantern")
+    if timeout:
+        try:
+            seconds = int(round(float(timeout)))
+            if seconds >= 3600 and seconds % 3600 == 0:
+                pretty = f"{seconds // 3600}h"
+            elif seconds >= 60 and seconds % 60 == 0:
+                pretty = f"{seconds // 60}m"
+            else:
+                pretty = f"{seconds}s"
+            lantern = f"{lantern}  off after {pretty}"
+        except (TypeError, ValueError):
+            pass
     print(
         f"  chamber {data.get('chamber')}   stealth {data.get('stealth')}"
-        f"   lantern {data.get('lantern')}"
+        f"   lantern {lantern}"
     )
+    extra = ""
+    if data.get("birthday_label"):
+        extra = f"   since {data.get('birthday_label')}"
     print(
         f"  firmware {data.get('firmware')}   serial {data.get('serial')}"
-        f"   uptime {data.get('uptime')}"
+        f"   uptime {data.get('uptime')}{extra}"
     )
     telemetry = data.get("telemetry") or {}
     print(
@@ -89,9 +110,20 @@ def print_status(data: dict, as_json: bool, units: str | None = None) -> None:
             temp = f"{p.get('temp_c')}°C"
         else:
             temp = f"{p.get('temp_f')}°F"
+        vapor = p.get("vapor") or ""
+        boost_t = p.get("boost_temp_f")
+        boost_s = p.get("boost_time")
+        boost = ""
+        if boost_t is not None or boost_s is not None:
+            try:
+                bt = int(round(float(boost_t or 0)))
+                bs = int(round(float(boost_s or 0)))
+                boost = f"+{bt}°/+{bs}s"
+            except (TypeError, ValueError):
+                boost = ""
         print(
             f" {mark} P{p.get('index')}: {str(p.get('name') or ''):<16} "
-            f"{temp}  {p.get('time')}s  {p.get('color') or ''}"
+            f"{temp}  {p.get('time')}s  {vapor:<8}  {boost:<10}  {p.get('color') or ''}"
         )
 
 
@@ -123,7 +155,7 @@ def print_stats(data: dict, as_json: bool) -> None:
     if since:
         import datetime as _dt
 
-        print(f"\nTracked locally since {_dt.datetime.fromtimestamp(since):%Y-%m-%d}")
+        print(f"\nTracking since {_dt.datetime.fromtimestamp(since):%Y-%m-%d}")
     else:
         print("\nNo local dab history yet — connect and take a dab to start tracking.")
 
@@ -134,6 +166,8 @@ def print_waybar(data: dict) -> None:
     state = data.get("operating_state") or "Disconnected"
     state_id = int(data.get("operating_state_id") or -1)
     battery = data.get("battery") or 0
+    plugged = (data.get("charge_source") or "Unplugged") != "Unplugged"
+    battery_text = f" {battery}%" if plugged else f"{battery}%"
     if units == "C" and data.get("heater_temp_c") is not None:
         temp = f"{int(round(float(data['heater_temp_c'])))}°C"
     elif data.get("heater_temp_f") is not None:
@@ -150,10 +184,10 @@ def print_waybar(data: dict) -> None:
     elif state_id == 9:
         css, text = "cool", f"{temp or 'cool'} ↓"
     else:
-        css, text = "idle", f"{battery}%"
+        css, text = "idle", battery_text
         if temp:
-            text = f"{temp}  {battery}%"
-    tooltip = state if not connected else f"{state} · {battery}% · {temp}".strip(" ·")
+            text = f"{temp}  {battery_text}"
+    tooltip = state if not connected else f"{state} · {battery_text} · {temp}".strip(" ·")
     print(
         json.dumps(
             {
@@ -167,12 +201,6 @@ def print_waybar(data: dict) -> None:
     )
 
 
-def launch_gui() -> int:
-    from .gui.app import run
-
-    return run()
-
-
 async def async_main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="ember",
@@ -182,7 +210,6 @@ async def async_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"ember {__version__}")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub.add_parser("gui", help="Open the desktop app")
     sub.add_parser("daemon", help="Run the BLE daemon in the foreground")
     sub.add_parser("ping")
     scan = sub.add_parser("scan")
@@ -195,12 +222,14 @@ async def async_main(argv: list[str] | None = None) -> int:
     sub.add_parser("refresh")
     sub.add_parser("waybar", help="One-shot Waybar JSON")
     sub.add_parser("stats", help="Dab telemetry: today/week/month/year + lifetime")
+    sub.add_parser("sync", help="Pull usage history from the Peak's own log")
 
     heat = sub.add_parser("heat")
     heat.add_argument("action", choices=["start", "stop", "boost"])
 
     lantern = sub.add_parser("lantern")
-    lantern.add_argument("action", choices=["on", "off"])
+    lantern.add_argument("action", choices=["on", "off"], nargs="?")
+    lantern.add_argument("--timeout", type=float, help="Lantern auto-off in seconds (60–28800)")
 
     bright = sub.add_parser("brightness")
     bright.add_argument("level", type=int, nargs="?", help="0-255 applied to all zones")
@@ -216,19 +245,56 @@ async def async_main(argv: list[str] | None = None) -> int:
     prof.add_argument("--temp-c", type=float)
     prof.add_argument("--time", type=float)
     prof.add_argument("--color")
+    prof.add_argument("--vapor", help="smooth, bold, intense, extreme")
+    prof.add_argument("--boost-temp", type=float, help="Boost Δ temperature in °F (0–36)")
+    prof.add_argument("--boost-time", type=float, help="Boost extra seconds (0–60)")
 
     anim = sub.add_parser("anim")
-    anim.add_argument("name", choices=["solid", "breathing", "rising", "circling", "heat"])
+    anim.add_argument(
+        "name",
+        choices=[
+            "solid",
+            "fill",
+            "fade",
+            "disco",
+            "split",
+            "spin",
+            "breathing",
+            "rising",
+            "circling",
+            "heat",
+        ],
+    )
     anim.add_argument("--index", type=int)
     anim.add_argument("--color", action="append", dest="colors")
+
+    mood = sub.add_parser("mood", help="Exclusive Puffco mood lights")
+    mood.add_argument(
+        "name",
+        nargs="?",
+        help="puffcon, july4, candle, hologram, lupus, disco",
+    )
+    mood.add_argument("--index", type=int)
+    mood.add_argument("--no-lantern", action="store_true")
+
+    peek = sub.add_parser("peek", help="Read a Lorax path (debug)")
+    peek.add_argument("path")
+    peek.add_argument("--size", type=int, default=12)
+    poke = sub.add_parser("poke", help="Write hex bytes to a Lorax path (debug)")
+    poke.add_argument("path")
+    poke.add_argument("hex")
 
     stealth = sub.add_parser("stealth")
     stealth.add_argument("action", choices=["on", "off"])
 
+    name = sub.add_parser("name", help="Rename the Peak")
+    name.add_argument("value", nargs="?", help="New device name")
+
     units = sub.add_parser("units")
     units.add_argument("value", choices=["F", "C", "f", "c"])
 
-    sub.add_parser("battery")
+    sub.add_parser("battery", help="Flash battery level on the Peak")
+    sub.add_parser("version", help="Flash firmware version on the Peak")
     sub.add_parser("sleep")
     sub.add_parser("off")
     reset = sub.add_parser("factory-reset")
@@ -238,8 +304,9 @@ async def async_main(argv: list[str] | None = None) -> int:
     raw = args.json
     cmd = args.cmd
 
-    if cmd is None or cmd == "gui":
-        return launch_gui()
+    if cmd is None:
+        parser.print_help()
+        return 0
     if cmd == "daemon":
         from .daemon import main as daemon_main
 
@@ -284,11 +351,21 @@ async def async_main(argv: list[str] | None = None) -> int:
         print_waybar(data)
     elif cmd == "stats":
         print_stats(await call("stats", timeout=10), raw)
+    elif cmd == "sync":
+        result = await call("sync_usage", None, 1800.0)
+        print(f"Read {result['read']} log entries from the Peak, {result['added']} new sessions.")
     elif cmd == "heat":
         await call(f"{args.action}_heat")
         print_status(await call("status"), raw)
     elif cmd == "lantern":
-        await call("start_lantern" if args.action == "on" else "stop_lantern")
+        if args.timeout is not None:
+            await call("set_lantern_timeout", {"seconds": args.timeout})
+        if args.action == "on":
+            await call("start_lantern")
+        elif args.action == "off":
+            await call("stop_lantern")
+        elif args.timeout is None:
+            raise SystemExit("Give on, off, or --timeout SECONDS")
         print_status(await call("status"), raw)
     elif cmd == "brightness":
         payload = {}
@@ -305,7 +382,22 @@ async def async_main(argv: list[str] | None = None) -> int:
         if args.index is None:
             print_status(await call("status"), raw)
             return 0
-        await call("set_profile", {"index": args.index})
+        editing = any(
+            [
+                args.name,
+                args.temp_c is not None,
+                args.temp_f is not None,
+                args.time is not None,
+                args.color,
+                args.vapor,
+                args.boost_temp is not None,
+                args.boost_time is not None,
+            ]
+        )
+        # Selecting first flashes the stock profile colour (medium = green)
+        # over the paint we haven't written yet. Paint, then select.
+        if not editing:
+            await call("set_profile", {"index": args.index})
         if args.name:
             await call("set_profile_name", {"index": args.index, "name": args.name})
         if args.temp_c is not None:
@@ -316,6 +408,17 @@ async def async_main(argv: list[str] | None = None) -> int:
             await call("set_profile_time", {"index": args.index, "seconds": args.time})
         if args.color:
             await call("set_profile_color", {"index": args.index, "hex": args.color})
+        if args.vapor:
+            await call("set_profile_vapor", {"index": args.index, "name": args.vapor})
+        if args.boost_temp is not None or args.boost_time is not None:
+            payload: dict[str, Any] = {"index": args.index}
+            if args.boost_temp is not None:
+                payload["temp_f"] = args.boost_temp
+            if args.boost_time is not None:
+                payload["seconds"] = args.boost_time
+            await call("set_profile_boost", payload)
+        if editing:
+            await call("set_profile", {"index": args.index})
         print_status(await call("status"), raw)
     elif cmd == "anim":
         await call(
@@ -323,9 +426,34 @@ async def async_main(argv: list[str] | None = None) -> int:
             {"anim": args.name, "index": args.index, "colors": args.colors or ["#ffffff"]},
         )
         print_status(await call("status"), raw)
+    elif cmd == "mood":
+        if not args.name:
+            from .moods import EXCLUSIVE
+
+            for key, spec in EXCLUSIVE.items():
+                print(f"  {key:<10} {spec['label']}  ({', '.join(spec['colors'])})")
+            return 0
+        await call(
+            "set_mood",
+            {
+                "name": args.name,
+                "index": args.index,
+                "lantern": not args.no_lantern,
+            },
+        )
+        print_status(await call("status"), raw)
+    elif cmd == "peek":
+        print(json.dumps(await call("peek", {"path": args.path, "size": args.size}), indent=2 if raw else None, default=str))
+    elif cmd == "poke":
+        print(json.dumps(await call("poke", {"path": args.path, "hex": args.hex}), indent=2 if raw else None, default=str))
     elif cmd == "stealth":
         await call("set_stealth", {"enable": args.action == "on"})
         print_status(await call("status"), raw)
+    elif cmd == "name":
+        if not args.value:
+            print_status(await call("status"), raw)
+            return 0
+        print_status(await call("set_device_name", {"name": args.value}), raw)
     elif cmd == "units":
         from .paths import save_config
 
@@ -335,6 +463,8 @@ async def async_main(argv: list[str] | None = None) -> int:
         print(f"Units set to °{cfg['units']}")
     elif cmd == "battery":
         await call("show_battery")
+    elif cmd == "version":
+        await call("show_version")
     elif cmd == "sleep":
         await call("sleep")
     elif cmd == "off":
@@ -353,8 +483,6 @@ def main(argv: list[str] | None = None) -> None:
 
         daemon_main()
         return
-    if not argv or argv[0] == "gui":
-        raise SystemExit(launch_gui())
     raise SystemExit(asyncio.run(async_main(argv)))
 
 

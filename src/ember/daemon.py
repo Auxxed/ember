@@ -8,37 +8,37 @@ import json
 import logging
 import os
 import signal
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Optional
 
-from . import history
-from .ble import PuffcoBLE
-from .constants import PROFILE_COUNT, AnimationCode, OperatingState
+from . import audit, history
+from .ble import LoraxError, PuffcoBLE
+from .constants import PROFILE_COUNT, OperatingState
 from .paths import load_config, log_path, save_config, socket_path
+from .moods import resolve_mood, resolve_style
 from .product_info import is_proxy
 from .utils import PuffcoUtils
+from .vapor import snap as snap_vapor, value_for as vapor_value
 
 log = logging.getLogger("ember.daemon")
-
-ANIM_ALIASES = {
-    "solid": None,
-    "breathing": AnimationCode.BREATHING,
-    "rising": AnimationCode.RISING,
-    "circling": AnimationCode.CIRCLING,
-    "heat": AnimationCode.HEAT_CYCLE_ACTIVE,
-}
 
 HEAT_STATES = {
     int(OperatingState.HEAT_CYCLE_PREHEAT),
     int(OperatingState.HEAT_CYCLE_ACTIVE),
 }
 
-# Peak Pro's own firmware/app range. Enforced here so no client (GUI, CLI,
-# or a raw RPC call) can push the heater past what the hardware is rated
-# for — this is the one chokepoint every profile write passes through.
+# Peak Pro's own firmware/app range. Enforced here so no client (CLI or a
+# raw RPC call) can push the heater past what the hardware is rated for —
+# this is the one chokepoint every profile write passes through.
 MIN_TEMP_F, MAX_TEMP_F = 400.0, 620.0
 MIN_TIME_S, MAX_TIME_S = 5.0, 180.0
+# Connect Boost Mode: extra heat and extra seconds on a double-click.
+MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F = 0.0, 36.0
+MIN_BOOST_TIME_S, MAX_BOOST_TIME_S = 0.0, 60.0
+# Lantern auto-off. Firmware default on this Peak is 7200s (2h).
+MIN_LANTERN_S, MAX_LANTERN_S = 60.0, 28800.0
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -60,6 +60,8 @@ class EmberDaemon:
         self.status: dict[str, Any] = self._empty_status()
         self.clients: set[asyncio.StreamWriter] = set()
         self._cmd_lock = asyncio.Lock()
+        self._sync_lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task] = set()
         self._poll_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._auto_reconnect = True
@@ -87,6 +89,8 @@ class EmberDaemon:
             "battery": 0,
             "charge_state": "",
             "charge_state_id": -1,
+            "charge_source": "",
+            "charge_source_id": -1,
             "chamber": "",
             "chamber_id": -1,
             "operating_state": "Disconnected",
@@ -95,21 +99,50 @@ class EmberDaemon:
             "heater_temp_f": None,
             "stealth": False,
             "lantern": False,
+            "lantern_timeout": None,
+            "birthday": None,
+            "birthday_label": "",
             "dabs_remaining": 0,
             "dabs_per_day": 0,
             "total_dabs": 0,
             "current_profile": 0,
             "profiles": [],
             "brightness": {"base": 80, "mid": 80, "glass": 80, "logo": 80},
-            "telemetry": {},
+            "telemetry": history.get_stats(),
         }
+
+    def _cycle_meta(self) -> dict[str, Any]:
+        """Temp / time / color of the profile that just hit ready."""
+        try:
+            index = int(self.status.get("current_profile") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        meta: dict[str, Any] = {}
+        for profile in self.status.get("profiles") or []:
+            try:
+                if int(profile.get("index")) != index:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if profile.get("temp_f") is not None:
+                meta["temp_f"] = profile["temp_f"]
+            if profile.get("time") is not None:
+                meta["time_s"] = profile["time"]
+            color = profile.get("color")
+            if isinstance(color, str) and color.startswith("#"):
+                meta["color"] = color
+            break
+        return meta
 
     def _apply_snapshot(self, snap: dict[str, Any]) -> None:
         """Merge a full device snapshot into status and refresh telemetry."""
         snap["lantern"] = self.lantern
         snap["brightness"] = dict(self.brightness)
+        total = snap.get("total_dabs")
+        history.record_total(total)
+        if total is None:
+            snap["total_dabs"] = self.status.get("total_dabs") or 0
         self.status.update(snap)
-        history.record_total(self.status.get("total_dabs"))
         self.status["telemetry"] = history.get_stats()
 
     def _on_ble_drop(self) -> None:
@@ -213,7 +246,44 @@ class EmberDaemon:
         )
         self._start_poll()
         await self._broadcast_event("status", self.status)
+        self._spawn(self._sync_usage_safe())
         return self.status
+
+    async def _sync_usage(self) -> dict:
+        """Pull new heat sessions from the Peak's audit log into history."""
+        async with self._sync_lock:
+            dev = self._require_device()
+            serial = str(self.status.get("serial") or "")
+            begin, end = await dev.get_audit_bounds()
+            state = history.device_log_state()
+            start = begin + 1
+            # A stored index at or past the ring's end means the log was cleared.
+            if state.get("serial") == serial and state.get("index") is not None and int(state["index"]) < end:
+                start = max(start, int(state["index"]) + 1)
+            entries = [
+                audit.parse_entry(i, await dev.read_audit_entry(i)) for i in range(start, end)
+            ]
+            clock = await dev.get_device_clock()
+            found = audit.sessions(entries, clock, time.time())
+            added = history.record_device_sessions(found, last_index=max(end - 1, start - 1), serial=serial)
+            self.status["telemetry"] = history.get_stats()
+            await self._broadcast_event("status", self.status)
+            log.info("Usage sync: read %d log entries, %d new sessions", len(entries), added)
+            return {"read": len(entries), "added": added}
+
+    def _spawn(self, coro) -> None:
+        # The loop only holds weak references to tasks.
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _sync_usage_safe(self, delay: float = 0.0) -> None:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await self._sync_usage()
+        except Exception as exc:
+            log.warning("Usage sync failed: %s", exc)
 
     async def _disconnect(self, forget: bool = False) -> dict:
         if forget:
@@ -256,6 +326,9 @@ class EmberDaemon:
                     await self._broadcast_event("status", self.status)
                     new_state = self.status.get("operating_state_id")
                     if prev_state != new_state and new_state == int(OperatingState.HEAT_CYCLE_ACTIVE):
+                        history.record_cycle(**self._cycle_meta())
+                        self.status["telemetry"] = history.get_stats()
+                        self._spawn(self._sync_usage_safe(delay=5.0))
                         await self._broadcast_event(
                             "notify",
                             {"title": "Ember", "body": "Peak Pro is ready"},
@@ -302,6 +375,7 @@ class EmberDaemon:
         if cmd == "disconnect":
             return await self._disconnect(forget=True)
         if cmd == "status":
+            self.status["telemetry"] = history.get_stats()
             return self.status
         if cmd == "refresh":
             dev = self._require_device()
@@ -319,6 +393,26 @@ class EmberDaemon:
             cfg.update(args)
             save_config(cfg)
             return cfg
+        if cmd == "peek":
+            path = str(args["path"])
+            size = int(args.get("size") or 12)
+            try:
+                raw = await self._require_device().read_short(path, 0, size)
+            except LoraxError as exc:
+                return {"path": path, "ok": False, "status": exc.status, "error": str(exc)}
+            except Exception as exc:
+                return {"path": path, "ok": False, "error": str(exc)}
+            return {
+                "path": path,
+                "ok": True,
+                "hex": raw.hex(),
+                "n": len(raw),
+            }
+        if cmd == "poke":
+            path = str(args["path"])
+            raw = bytes.fromhex(str(args["hex"]))
+            await self._require_device().write_short(path, 0, 0, raw)
+            return {"path": path, "ok": True, "n": len(raw)}
         if cmd == "stats":
             stats = history.get_stats(days=int(args.get("days", 14)))
             stats["total_dabs"] = self.status.get("total_dabs", 0)
@@ -349,6 +443,12 @@ class EmberDaemon:
             self.status["lantern"] = False
             await self._broadcast_event("status", self.status)
             return {"lantern": False}
+        if cmd == "set_lantern_timeout":
+            seconds = _clamp(float(args["seconds"]), MIN_LANTERN_S, MAX_LANTERN_S)
+            await dev.set_lantern_timeout(seconds)
+            self.status["lantern_timeout"] = seconds
+            await self._broadcast_event("status", self.status)
+            return {"lantern_timeout": seconds}
         if cmd == "set_brightness":
             if "level" in args and not any(k in args for k in ("base", "mid", "glass", "logo")):
                 level = int(args["level"])
@@ -392,31 +492,72 @@ class EmberDaemon:
             seconds = _clamp(float(args["seconds"]), MIN_TIME_S, MAX_TIME_S)
             await dev.set_profile_time(index, seconds)
             return await self.handle("refresh", {})
+        if cmd == "set_profile_vapor":
+            index = _validate_index(args)
+            if "name" in args:
+                level = vapor_value(str(args["name"]))
+            else:
+                level = snap_vapor(float(args["level"]))
+            await dev.set_profile_vapor(index, level)
+            return await self.handle("refresh", {})
+        if cmd == "set_profile_boost":
+            index = _validate_index(args)
+            if "temp_f" in args:
+                await dev.set_profile_boost_temp_f(
+                    index, _clamp(float(args["temp_f"]), MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F)
+                )
+            if "seconds" in args:
+                await dev.set_profile_boost_time(
+                    index, _clamp(float(args["seconds"]), MIN_BOOST_TIME_S, MAX_BOOST_TIME_S)
+                )
+            return await self.handle("refresh", {})
         if cmd == "set_profile_color":
             index = args.get("index")
             if index is not None:
                 index = _validate_index({"index": index})
             await dev.set_profile_solid_color(index, str(args["hex"]))
+            self.lantern = True
+            self.status["lantern"] = True
             return await self.handle("refresh", {})
         if cmd == "set_animation":
-            name = str(args.get("anim", "solid")).lower()
             colors = args.get("colors") or [args.get("hex") or "#ffffff"]
             index = args.get("index")
             if index is not None:
                 index = _validate_index({"index": index})
-            if name == "solid":
+            style = resolve_style(str(args.get("anim", "solid")))
+            if style["anim"] is None:
                 await dev.set_profile_solid_color(index, colors[0])
             else:
-                anim = ANIM_ALIASES.get(name)
-                if anim is None:
-                    raise ValueError(f"Unknown animation: {name}")
                 await dev.set_profile_animation(
                     index,
-                    anim,
+                    style["anim"],
                     list(colors),
-                    speed=int(args.get("speed", 20)),
+                    speed=int(args.get("speed", style["speed"])),
                     bright=int(args.get("bright", 255)),
+                    offsets=style["offsets"],
                 )
+            self.lantern = True
+            self.status["lantern"] = True
+            return await self.handle("refresh", {})
+        if cmd == "set_mood":
+            mood = resolve_mood(str(args["name"]))
+            index = args.get("index")
+            if index is not None:
+                index = _validate_index({"index": index})
+            if mood["anim"] is None:
+                await dev.set_profile_solid_color(index, mood["colors"][0])
+            else:
+                await dev.set_profile_animation(
+                    index,
+                    mood["anim"],
+                    mood["colors"],
+                    speed=mood["speed"],
+                    offsets=mood["offsets"],
+                )
+            if args.get("lantern", True):
+                await dev.start_lantern()
+                self.lantern = True
+                self.status["lantern"] = True
             return await self.handle("refresh", {})
         if cmd == "set_stealth":
             enable = bool(args.get("enable"))
@@ -462,8 +603,13 @@ class EmberDaemon:
                 cmd = msg.get("cmd")
                 args = msg.get("args") or {}
                 try:
-                    async with self._cmd_lock:
-                        result = await self.handle(str(cmd), args)
+                    # A full log read takes minutes; holding the command lock
+                    # for it would leave Heat/Stop unresponsive meanwhile.
+                    if cmd == "sync_usage":
+                        result = await self._sync_usage()
+                    else:
+                        async with self._cmd_lock:
+                            result = await self.handle(str(cmd), args)
                     await self._send(writer, {"id": req_id, "ok": True, "result": result})
                 except Exception as exc:
                     log.exception("command %s failed", cmd)

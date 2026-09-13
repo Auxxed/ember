@@ -22,9 +22,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # No BlueZ or GTK here on purpose: these tests cover the pure logic
-      # (codec, history, config, limits, adapter-free helpers). The BLE and
-      # GUI layers need real hardware and a display, so they stay out of CI.
+      # No BlueZ here on purpose: these tests cover the pure logic (codec,
+      # history, config, limits, adapter-free helpers). The BLE layer needs
+      # real hardware, so it stays out of CI.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip

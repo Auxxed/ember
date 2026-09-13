@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 class PuffcoUtils:
     @staticmethod
     def revision_number_to_string(value) -> str:
@@ -22,6 +25,18 @@ class PuffcoUtils:
         return (float(fahrenheit) - 32) / 1.8
 
     @staticmethod
+    def c_string(raw) -> str:
+        """Decode a device C-string. The name buffers are fixed-size and a
+        shorter write leaves the old tail after the first NUL."""
+        if raw is None:
+            return ""
+        if isinstance(raw, str):
+            text = raw
+        else:
+            text = bytes(raw).decode(errors="ignore")
+        return text.split("\x00", 1)[0].strip()
+
+    @staticmethod
     def format_uptime(seconds: int) -> str:
         seconds = max(0, int(seconds))
         days, rem = divmod(seconds, 86400)
@@ -32,3 +47,14 @@ class PuffcoUtils:
         if hours:
             return f"{hours}h {minutes}m"
         return f"{minutes}m {secs}s"
+
+    @staticmethod
+    def format_birthday(unix: int | None) -> str:
+        """Device first-use date from `/u/sys/bday`."""
+        try:
+            stamp = int(unix)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return ""
+        if stamp <= 0:
+            return ""
+        return datetime.fromtimestamp(stamp).strftime("%b %d, %Y").replace(" 0", " ")

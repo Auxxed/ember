@@ -1,15 +1,21 @@
 """The daemon is the single chokepoint every profile write passes through.
 
-The GUI's sliders already bound what it can send, but the CLI and a raw
-RPC call do not — so these limits are what actually stands between a
-malformed request and the heater.
+Nothing on the client side bounds what a caller can send — the CLI takes a
+raw `--temp-f` and a raw RPC call can send anything — so these limits are
+what actually stands between a malformed request and the heater.
 """
 
 import pytest
 
 from ember.daemon import (
+    MAX_BOOST_TEMP_F,
+    MAX_BOOST_TIME_S,
+    MAX_LANTERN_S,
     MAX_TEMP_F,
     MAX_TIME_S,
+    MIN_BOOST_TEMP_F,
+    MIN_BOOST_TIME_S,
+    MIN_LANTERN_S,
     MIN_TEMP_F,
     MIN_TIME_S,
     _clamp,
@@ -45,6 +51,26 @@ class TestTemperatureLimits:
         assert MIN_TIME_S < MAX_TIME_S
         assert _clamp(0, MIN_TIME_S, MAX_TIME_S) == MIN_TIME_S
         assert _clamp(10_000, MIN_TIME_S, MAX_TIME_S) == MAX_TIME_S
+
+
+class TestBoostLimits:
+    def test_matches_connect_range(self):
+        assert MIN_BOOST_TEMP_F == 0.0
+        assert MAX_BOOST_TEMP_F == 36.0
+        assert MIN_BOOST_TIME_S == 0.0
+        assert MAX_BOOST_TIME_S == 60.0
+
+    def test_clamps_out_of_range_boost(self):
+        assert _clamp(-5, MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F) == MIN_BOOST_TEMP_F
+        assert _clamp(99, MIN_BOOST_TEMP_F, MAX_BOOST_TEMP_F) == MAX_BOOST_TEMP_F
+        assert _clamp(120, MIN_BOOST_TIME_S, MAX_BOOST_TIME_S) == MAX_BOOST_TIME_S
+
+
+class TestLanternTimeout:
+    def test_brackets_the_firmware_default(self):
+        assert MIN_LANTERN_S <= 7200 <= MAX_LANTERN_S
+        assert _clamp(10, MIN_LANTERN_S, MAX_LANTERN_S) == MIN_LANTERN_S
+        assert _clamp(99_000, MIN_LANTERN_S, MAX_LANTERN_S) == MAX_LANTERN_S
 
 
 class TestValidateIndex:

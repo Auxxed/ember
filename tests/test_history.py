@@ -1,5 +1,6 @@
 import json
 import time
+from datetime import datetime
 
 from ember import history
 
@@ -42,6 +43,12 @@ class TestRecordTotal:
         history.record_total(505)
         assert history.record_total(2) is None
         assert history.record_total(4) == {"ts": history._load()["events"][-1]["ts"], "delta": 2, "total": 4}
+
+    def test_zero_does_not_wipe_a_real_lifetime_total(self):
+        history.record_total(751)
+        history.record_total(752)
+        assert history.record_total(0) is None
+        assert history._load()["last_total"] == 752
 
     def test_none_and_junk_are_ignored(self):
         assert history.record_total(None) is None
@@ -93,6 +100,76 @@ class TestGetStats:
         assert stats["today"] == 0
         assert stats["tracked_total"] == 0
         assert stats["tracking_since"] is None
+
+
+class TestFailedReadPoison:
+    def test_zero_baseline_with_no_events_is_not_a_real_total(self):
+        history.record_total(0)
+        assert history.has_device_total() is False
+        assert history.record_total(50) is None
+        assert history.get_stats()["today"] == 0
+        assert history._load()["last_total"] == 50
+        assert history.has_device_total() is True
+
+    def test_none_is_ignored(self):
+        assert history.record_total(None) is None
+        assert history._load()["last_total"] is None
+
+
+class TestRecordCycle:
+    def test_counts_a_heat_cycle_locally(self):
+        event = history.record_cycle()
+        assert event["delta"] == 1
+        assert history.get_stats()["today"] == 1
+
+    def test_does_not_turn_a_zero_baseline_into_a_lifetime_total(self):
+        history.record_total(0)
+        history.record_cycle()
+        assert history._load()["last_total"] == 0
+        assert history.get_stats()["today"] == 1
+
+
+class TestMetrics:
+    def test_current_streak_counts_consecutive_days_ending_today(self):
+        write_events([(5, 1), (86400, 1), (86400 * 2, 1)])
+        stats = history.get_stats()
+        assert stats["streak"] == 3
+        assert stats["streak_best"] == 3
+
+    def test_broken_streak_is_zero_when_today_is_empty(self):
+        write_events([(86400, 1), (86400 * 2, 1)])
+        assert history.get_stats()["streak"] == 0
+
+    def test_top_hour_follows_the_busiest_bucket(self):
+        now = time.time()
+        path = history.history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        six_am = datetime.now().replace(hour=6, minute=0, second=0, microsecond=0).timestamp()
+        noon = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0).timestamp()
+        path.write_text(
+            json.dumps(
+                {
+                    "last_total": 3,
+                    "first_seen": now,
+                    "events": [
+                        {"ts": six_am, "delta": 2, "total": 2},
+                        {"ts": noon, "delta": 1, "total": 3},
+                    ],
+                }
+            )
+        )
+        stats = history.get_stats()
+        assert stats["top_hour"] == 6
+        assert stats["hours"][6] == 2
+        assert stats["hours"][12] == 1
+
+    def test_averages_come_from_cycle_metadata(self):
+        history.record_cycle(temp_f=510, time_s=40, color="#3dd68c")
+        history.record_cycle(temp_f=550, time_s=30, color="#ff4d4d")
+        stats = history.get_stats()
+        assert stats["avg_temp_f"] == 530
+        assert stats["avg_time_s"] == 35
+        assert stats["colors"][0] in {"#3dd68c", "#ff4d4d"}
 
 
 class TestRetention:

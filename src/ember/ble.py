@@ -20,10 +20,12 @@ from bleak.backends.device import BLEDevice
 from .codec import decode_puffco_json, first_color, hexify
 from .constants import (
     CHAMBER_LABELS,
+    CHARGE_SOURCE_LABELS,
     CHARGE_STATE_LABELS,
     OPERATING_STATE_LABELS,
     PROFILE_COUNT,
     AnimationCode,
+    BatteryChargeSource,
     BatteryChargeState,
     ChamberType,
     LoraxOpCodes,
@@ -32,8 +34,10 @@ from .constants import (
     OperatingState,
     UnlockKeys,
 )
+from .moods import pikaled2_payload
 from .product_info import get_product_info, is_proxy
 from .utils import PuffcoUtils
+from .vapor import name_for as vapor_name_for
 
 log = logging.getLogger("ember.ble")
 
@@ -69,6 +73,15 @@ DataType = Literal[
 PEAK_PRO_NAME_HINTS = ("puffco", "peak")
 EXCLUDE_NAME_HINTS = ("proxy", "pivot")
 HEATER_TEMP_PATHS = ("/p/app/htr/temp", "/p/htr/temp")
+
+
+def _enum_or_raw(enum_cls, value: int):
+    # Newer firmware can report codes this table doesn't know; keep the raw
+    # number rather than failing the whole snapshot.
+    try:
+        return enum_cls(value)
+    except ValueError:
+        return int(value)
 
 
 class LoraxError(RuntimeError):
@@ -625,17 +638,44 @@ class PuffcoBLE:
                 raise RuntimeError(f"read_bytes_all exceeded cap of {cap} bytes")
         return bytes(out)
 
-    async def write_cbor_full(self, path: str, obj: dict, chunk: int = 80) -> None:
+    async def write_cbor_full(self, path: str, obj: dict, chunk: int = 160) -> None:
         blob = cbor2.dumps(hexify(obj), canonical=True)
+        # One-shot replace when it fits: a half-written pikaled2 is what
+        # made the Peak preview factory green until later chunks arrived.
+        if len(blob) <= 250:
+            written = False
+            for flags in (1, 4, 0):
+                try:
+                    await self.write_short(path, 0, flags, blob)
+                    written = True
+                    break
+                except LoraxError:
+                    continue
+            if written:
+                # Firmware ignores truncate flags, so a shorter solid
+                # payload used to leave the old pikaled2 tail (factory
+                # green) sitting in the lantern file.
+                try:
+                    await self.write_short(path, len(blob), 0, b"\x00" * 64)
+                except LoraxError:
+                    pass
+                return
         offset = 0
+        flags = 1
         while offset < len(blob):
             piece = blob[offset : offset + chunk]
-            await self.write_short(path, offset, 0, piece)
+            try:
+                await self.write_short(path, offset, flags, piece)
+            except LoraxError:
+                if flags == 0:
+                    raise
+                await self.write_short(path, offset, 0, piece)
             offset += len(piece)
+            flags = 0
 
     async def _read_and_decode(self, path: str) -> str:
         raw = await self.read_short(path, 0, 125)
-        return bytes(raw).decode(errors="ignore").rstrip("\x00")
+        return PuffcoUtils.c_string(raw)
 
     async def get_device_info(self) -> dict[str, Any]:
         mdcd = await self.read("/p/sys/hw/mdcd", 0, 4, "uint32")
@@ -681,40 +721,78 @@ class PuffcoBLE:
         return PuffcoUtils.revision_number_to_string(int(data))
 
     async def get_uptime(self) -> int:
-        try:
-            return int(await self.read("/p/sys/uptm", 0, 4, "uint32"))
-        except Exception:
-            raw = await self.read_short("/p/sys/uptm", 0, 4)
-            if len(raw) >= 4:
-                return int(struct.unpack("<I", raw[:4])[0])
-            return 0
+        # float32 seconds; reading it as uint32 reported ~14000 days.
+        return int(float(await self.read("/p/sys/uptm", 0, 4, "float32")))
 
     async def get_chamber_type(self) -> ChamberType:
         data = await self.read_short("/p/htr/chmt", 0, 1)
-        return ChamberType(int(data[0]))
+        return _enum_or_raw(ChamberType, int(data[0]))
 
     async def get_battery_charge_state(self) -> BatteryChargeState:
         data = await self.read_short("/p/bat/chg/stat", 0, 1)
-        return BatteryChargeState(int(data[0]))
+        return _enum_or_raw(BatteryChargeState, int(data[0]))
+
+    async def get_battery_charge_source(self) -> BatteryChargeSource:
+        data = await self.read_short("/p/bat/chg/src", 0, 1)
+        return _enum_or_raw(BatteryChargeSource, int(data[0]))
+
+    async def get_device_birthday(self) -> int:
+        return int(await self.read("/u/sys/bday", 0, 4, "uint32"))
+
+    async def get_lantern_timeout(self) -> float:
+        return float(await self.read("/p/app/ltrn/time", 0, 4, "float32"))
+
+    async def set_lantern_timeout(self, seconds: float) -> None:
+        await self.write("/p/app/ltrn/time", float(seconds), data_type="float32")
 
     async def get_battery_level(self) -> int:
-        value = float(await self.read("/p/bat/cap", 0, 4, "float32"))
-        if 0.0 <= value <= 1.0:
-            return int(round(value * 100))
+        # /p/bat/soc is charge percent; /p/bat/cap is pack capacity in mAh,
+        # which clamped to a permanent 100%.
+        value = float(await self.read("/p/bat/soc", 0, 4, "float32"))
         return max(0, min(100, int(round(value))))
 
     async def get_operating_state(self) -> OperatingState:
         data = await self.read_short("/p/app/stat/id", 0, 1)
-        return OperatingState(data[0])
+        return _enum_or_raw(OperatingState, int(data[0]))
+
+    async def _read_dab_count(self, path: str) -> int:
+        # These counters are float32 values in a 12-byte Lorax file. Asking
+        # for 4 bytes as uint32 is rejected with status 0x02 on current
+        # Peak Pro firmware, which is how Ember used to report 0 forever.
+        return int(round(float(await self.read(path, 0, 12, "float32"))))
 
     async def get_approx_dabs_remaining(self) -> int:
-        return int(await self.read("/p/app/info/drem", 0, 12, "float32"))
+        return await self._read_dab_count("/p/app/info/drem")
 
     async def get_dabs_per_day(self) -> int:
-        return int(await self.read("/p/app/info/dpd", 0, 12, "float32"))
+        return await self._read_dab_count("/p/app/info/dpd")
 
     async def get_total_dabs(self) -> int:
-        return int(await self.read("/p/app/info/dtot", 0, 4, "uint32"))
+        # The official app reads the lifetime odometer; /p/app/info/dtot is
+        # rejected (status 0x02) on current Peak Pro firmware.
+        try:
+            return await self._read_dab_count("/p/app/odom/0/nc")
+        except LoraxError:
+            return await self._read_dab_count("/p/app/info/dtot")
+
+    async def get_audit_bounds(self) -> tuple[int, int]:
+        """Ring bounds; readable entries are strictly between the two."""
+        begin = int(await self.read("/p/logv/aud/begn", 0, 4, "uint32"))
+        end = int(await self.read("/p/logv/aud/end", 0, 4, "uint32"))
+        return begin, end
+
+    async def get_device_clock(self) -> int:
+        return int(await self.read("/p/sys/time", 0, 4, "uint32"))
+
+    async def read_audit_entry(self, index: int) -> bytes:
+        # The entry file serves whatever the selector points at, so wait for
+        # the cursor to land or a slow write hands back the previous entry.
+        await self.write_short("/p/logv/aud/sel", 0, 0, struct.pack("<I", index))
+        for _ in range(5):
+            if int(await self.read("/p/logv/aud/curr", 0, 4, "uint32")) == index:
+                return await self.read_short("/p/logv/aud/entr", 0, 16)
+            await asyncio.sleep(0.05)
+        raise LoraxError(f"Audit log cursor did not move to {index}")
 
     async def send_mode_command(self, command: ModeCommands) -> None:
         await self.write_short("/p/app/mc", 0, 0, bytes([int(command)]))
@@ -783,22 +861,46 @@ class PuffcoBLE:
         raw = await self.read_bytes_all(path)
         return decode_puffco_json(cbor2.loads(raw))
 
-    async def set_profile_colour(self, index: Optional[int] = None, *, colour: dict) -> None:
-        if index is None:
-            index = await self.get_current_profile()
-        await self.write_cbor_full(f"/u/app/hc/{index}/colr", colour)
-        # Colour writes only land in the persisted /u/app/hc/{n} slot. The
-        # LEDs render from the live /p/app/thc mirror, which the firmware
-        # only reloads when the profile is (re)selected — so if we just
-        # edited the *active* profile, reselect it to force an immediate
-        # refresh instead of leaving the old colour showing until the user
-        # switches profiles and back.
+    async def _reload_if_current(self, index: int) -> None:
         try:
             current = await self.get_current_profile()
         except Exception:
             current = None
         if current == index:
             await self.set_current_profile(index)
+
+    async def set_lantern_colour(self, colour: dict) -> None:
+        await self.write_cbor_full("/p/app/ltrn/colr", colour)
+
+    async def set_profile_colour(
+        self,
+        index: Optional[int] = None,
+        *,
+        colour: dict,
+        preview: bool = True,
+    ) -> None:
+        if index is None:
+            index = await self.get_current_profile()
+        # Live lantern first so the Peak shows the new colour immediately
+        # instead of the factory-green leftover sitting in /p/app/ltrn/colr.
+        # Do not reselect the heat profile — that plays the stock preview
+        # (medium = green) over the colour we just wrote.
+        if preview:
+            try:
+                await self.set_lantern_colour(colour)
+                await self.start_lantern()
+            except Exception:
+                log.debug("live lantern preview failed", exc_info=True)
+        await self.write_cbor_full(f"/u/app/hc/{index}/colr", colour)
+        try:
+            current = await self.get_current_profile()
+        except Exception:
+            current = None
+        if current == index:
+            try:
+                await self.write_cbor_full("/p/app/thc/colr", colour)
+            except Exception:
+                log.debug("live heat-cycle colour mirror failed", exc_info=True)
 
     async def set_profile_solid_color(self, index: Optional[int], hex_color: str) -> None:
         if not hex_color.startswith("#"):
@@ -813,28 +915,15 @@ class PuffcoBLE:
         colors: list[str],
         speed: int = 20,
         bright: int = 255,
+        offsets: list[int] | None = None,
     ) -> None:
-        if not colors:
-            colors = ["#ffffff"]
-        padded = (colors * 32)[:32]
-        payload = {
-            "lamp": {
-                "name": "pikaled2",
-                "param": {
-                    "anim": int(anim),
-                    "color": padded,
-                    "plNum": 0,
-                    "speed": int(speed),
-                    "bright": int(bright),
-                    "diFrac": 0,
-                    "offset": [0] * 20,
-                    "plDenom": 0,
-                    "colorLen": 32,
-                    "speedDi0": 4,
-                    "speedDi1": 40,
-                },
-            }
-        }
+        payload = pikaled2_payload(
+            int(anim),
+            colors,
+            speed=speed,
+            bright=bright,
+            offsets=offsets,
+        )
         await self.set_profile_colour(index, colour=payload)
 
     async def get_profile_name(self, index: Optional[int] = None) -> str:
@@ -868,6 +957,30 @@ class PuffcoBLE:
     async def set_profile_time(self, index: int, seconds: float) -> None:
         await self.write(f"/u/app/hc/{index}/time", float(seconds), data_type="float32")
 
+    async def get_profile_vapor(self, index: Optional[int] = None) -> float:
+        path = "/p/app/thc/intn" if index is None else f"/u/app/hc/{index}/intn"
+        return float(await self.read(path, 0, 4, "float32"))
+
+    async def set_profile_vapor(self, index: int, level: float) -> None:
+        await self.write(f"/u/app/hc/{index}/intn", float(level), data_type="float32")
+        await self._reload_if_current(index)
+
+    async def get_profile_boost_temp_f(self, index: Optional[int] = None) -> float:
+        path = "/p/app/thc/btmp" if index is None else f"/u/app/hc/{index}/btmp"
+        return float(await self.read(path, 0, 4, "float32"))
+
+    async def set_profile_boost_temp_f(self, index: int, fahrenheit: float) -> None:
+        await self.write(f"/u/app/hc/{index}/btmp", float(fahrenheit), data_type="float32")
+        await self._reload_if_current(index)
+
+    async def get_profile_boost_time(self, index: Optional[int] = None) -> float:
+        path = "/p/app/thc/btim" if index is None else f"/u/app/hc/{index}/btim"
+        return float(await self.read(path, 0, 4, "float32"))
+
+    async def set_profile_boost_time(self, index: int, seconds: float) -> None:
+        await self.write(f"/u/app/hc/{index}/btim", float(seconds), data_type="float32")
+        await self._reload_if_current(index)
+
     get_current_profile_name = get_profile_name
     get_current_profile_temp = get_profile_temp
     get_current_profile_duration = get_profile_time
@@ -882,6 +995,18 @@ class PuffcoBLE:
             color = first_color(decoded)
         except Exception:
             log.debug("Could not decode colour for profile %s", index, exc_info=True)
+        vapor = None
+        try:
+            vapor = await self.get_profile_vapor(index)
+        except Exception:
+            log.debug("Could not read vapor for profile %s", index, exc_info=True)
+        boost_temp_f = None
+        boost_time = None
+        try:
+            boost_temp_f = round(await self.get_profile_boost_temp_f(index), 1)
+            boost_time = round(await self.get_profile_boost_time(index), 1)
+        except Exception:
+            log.debug("Could not read boost for profile %s", index, exc_info=True)
         return {
             "index": index,
             "name": name or f"Profile {index + 1}",
@@ -889,6 +1014,10 @@ class PuffcoBLE:
             "temp_f": PuffcoUtils.c_to_f(temp_c),
             "time": time_s,
             "color": color,
+            "vapor": None if vapor is None else vapor_name_for(vapor),
+            "vapor_level": vapor,
+            "boost_temp_f": boost_temp_f,
+            "boost_time": boost_time,
         }
 
     async def snapshot(self, *, include_profiles: bool = True) -> dict[str, Any]:
@@ -901,6 +1030,7 @@ class PuffcoBLE:
 
         state = await self.get_operating_state()
         charge = await self.get_battery_charge_state()
+        source = await _optional(self.get_battery_charge_source())
         chamber = await self.get_chamber_type()
         current = await self.get_current_profile()
         info: dict[str, Any] = {}
@@ -910,6 +1040,7 @@ class PuffcoBLE:
             log.debug("product info failed", exc_info=True)
 
         heater_c = await self.get_heater_temp_c()
+        birthday = await _optional(self.get_device_birthday())
         data: dict[str, Any] = {
             "connected": True,
             "device_name": (await self.get_device_name()) or self.advertised_name or "Peak Pro",
@@ -920,18 +1051,25 @@ class PuffcoBLE:
             "bootloader": await self.get_bootloader_version(),
             "uptime_seconds": await self.get_uptime(),
             "battery": await self.get_battery_level(),
-            "charge_state": CHARGE_STATE_LABELS.get(charge, charge.name),
+            "charge_state": CHARGE_STATE_LABELS.get(charge, f"Unknown ({int(charge)})"),
             "charge_state_id": int(charge),
-            "chamber": CHAMBER_LABELS.get(chamber, chamber.name),
+            "charge_source": CHARGE_SOURCE_LABELS.get(source, "") if source is not None else "",
+            "charge_source_id": int(source) if source is not None else -1,
+            "chamber": CHAMBER_LABELS.get(chamber, f"Unknown ({int(chamber)})"),
             "chamber_id": int(chamber),
-            "operating_state": OPERATING_STATE_LABELS.get(state, state.name),
+            "operating_state": OPERATING_STATE_LABELS.get(state, f"Unknown ({int(state)})"),
             "operating_state_id": int(state),
             "heater_temp_c": heater_c,
             "heater_temp_f": None if heater_c is None else PuffcoUtils.c_to_f(heater_c),
             "stealth": await _optional(self.is_stealth_mode(), False),
             "dabs_remaining": await _optional(self.get_approx_dabs_remaining(), 0),
             "dabs_per_day": await _optional(self.get_dabs_per_day(), 0),
-            "total_dabs": await _optional(self.get_total_dabs(), 0),
+            # None on failure, not 0 — a failed read used to poison local
+            # history by looking like a brand-new Peak with zero dabs.
+            "total_dabs": await _optional(self.get_total_dabs(), None),
+            "birthday": birthday,
+            "birthday_label": PuffcoUtils.format_birthday(birthday),
+            "lantern_timeout": await _optional(self.get_lantern_timeout()),
             "current_profile": current,
             "profiles": [],
         }
@@ -951,6 +1089,10 @@ class PuffcoBLE:
                             "temp_f": 0,
                             "time": 0,
                             "color": None,
+                            "vapor": None,
+                            "vapor_level": None,
+                            "boost_temp_f": None,
+                            "boost_time": None,
                         }
                     )
             data["profiles"] = profiles
@@ -960,12 +1102,18 @@ class PuffcoBLE:
         state = await self.get_operating_state()
         charge = await self.get_battery_charge_state()
         heater_c = await self.get_heater_temp_c()
+        try:
+            source = await self.get_battery_charge_source()
+        except Exception:
+            source = None
         return {
             "connected": True,
             "battery": await self.get_battery_level(),
-            "charge_state": CHARGE_STATE_LABELS.get(charge, charge.name),
+            "charge_state": CHARGE_STATE_LABELS.get(charge, f"Unknown ({int(charge)})"),
             "charge_state_id": int(charge),
-            "operating_state": OPERATING_STATE_LABELS.get(state, state.name),
+            "charge_source": CHARGE_SOURCE_LABELS.get(source, "") if source is not None else "",
+            "charge_source_id": int(source) if source is not None else -1,
+            "operating_state": OPERATING_STATE_LABELS.get(state, f"Unknown ({int(state)})"),
             "operating_state_id": int(state),
             "current_profile": await self.get_current_profile(),
             "heater_temp_c": heater_c,

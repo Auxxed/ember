@@ -2,7 +2,7 @@
 
 A daemon killed with SIGKILL leaves its socket file behind. Treating that
 file as proof of life meant ensure_daemon() never respawned, and every
-GUI and CLI call failed until the socket was deleted by hand.
+CLI call failed until the socket was deleted by hand.
 """
 
 import socket

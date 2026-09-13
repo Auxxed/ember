@@ -2,55 +2,89 @@
 
 [![tests](https://github.com/Auxxed/ember/actions/workflows/tests.yml/badge.svg)](https://github.com/Auxxed/ember/actions/workflows/tests.yml)
 
-Peak Pro companion for Linux. Not affiliated with Puffco. Firmware updates can
-break the unofficial Lorax BLE protocol.
+Puffco Peak Pro controls for the [Omarchy](https://omarchy.org/) bar: chamber
+temperature and battery at a glance, heat and profile controls, lantern and
+mood lights, and usage stats read straight from the device.
 
-Ember talks to a **Peak Pro only**. Proxy and Pivot are rejected on purpose.
+Ember is unofficial and not affiliated with Puffco. It speaks the
+reverse-engineered Lorax Bluetooth protocol, so a Puffco firmware update can
+break it. It works with the **Peak Pro only**; Proxy and Pivot are rejected.
 
-![Ember GTK4 app](docs/screenshot.png)
-
-## What you get
-
-- GTK4 app: live chamber temp, heat / boost / stop, four profiles, lantern,
-  brightness, animations, stealth, sleep, power off
-- CLI with the same controls
-- `ember waybar` JSON for a status bar
-- Usage telemetry: today / this week / this month / this year dab counts,
-  tracked locally alongside the device's lifetime total and dabs-per-day
-  average (see `ember stats` or the app's Usage menu)
-- User systemd daemon so the GUI, CLI, and bar share one BLE connection
-
-Protocol work is forked from [Fr0st3h/PuffcoBLE](https://github.com/Fr0st3h/PuffcoBLE)
-and the [OldGrowthCrypto Linux/BlueZ fork](https://github.com/OldGrowthCrypto/Puffco).
+![Ember panel](preview.png)
 
 ## Install
 
 ```bash
-git clone https://github.com/Auxxed/ember.git
-cd ember
-./install.sh
-ember
+omarchy plugin add https://github.com/Auxxed/ember --enable && ~/.config/omarchy/plugins/auxxed.ember/install.sh
 ```
 
-Needs Python 3.10+, GTK4, libadwaita, BlueZ. BLE libraries are installed into
-`.venv` (system GTK is reused).
+`omarchy plugin add` installs the bar widget. `install.sh` sets up what the
+widget needs, all inside your home directory with no root access:
 
-Wake the Peak Pro, keep it next to the PC, and disconnect the phone app. The
-radio only accepts one client.
+- a Python environment in `~/.local/share/ember/venv` with the Bluetooth
+  libraries from PyPI: [`bleak`](https://pypi.org/project/bleak/),
+  [`cbor2`](https://pypi.org/project/cbor2/) and
+  [`dbus-fast`](https://pypi.org/project/dbus-fast/)
+- the `ember` command in `~/.local/bin`
+- the `ember-daemon` systemd user service, which holds the one Bluetooth
+  connection the widget and the command share
 
-## Bluetooth adapter
+If you add the plugin without running `install.sh`, the widget shows
+**Finish setup**, which runs it in a terminal.
 
-Ember picks the first powered adapter BlueZ reports, which is what you want on
-almost every machine. If you have more than one radio and need to pin a
-specific one, set it in `~/.config/ember/config.json`:
+Requirements: Python 3.10 or newer, BlueZ, and systemd — all present on a
+standard Omarchy install.
 
-```json
-{ "adapter": "hci1" }
+Then wake the Peak, keep it near the computer, and disconnect the Puffco phone
+app (the Peak accepts one connection at a time). Click the Ember widget and
+choose **Connect**.
+
+## Update
+
+```bash
+omarchy plugin update auxxed.ember && ~/.config/omarchy/plugins/auxxed.ember/install.sh
 ```
 
-`bluetoothctl list` shows what you have.
+## Remove
 
-## CLI
+```bash
+~/.config/omarchy/plugins/auxxed.ember/uninstall.sh
+```
+
+This stops the daemon, removes the `ember` command and the Python environment,
+and removes the plugin. Your dab history (`~/.local/share/ember/dabs.json`) and
+settings (`~/.config/ember`) are kept; delete those folders too for a clean
+removal.
+
+## Using it
+
+- **Bar** — chamber temperature and battery, with ⚡ while plugged in.
+  Left-click opens the panel, right-click starts a heat cycle, middle-click
+  refreshes.
+- **Control** — Heat, Boost and Stop; the four heat profiles (click one to
+  select it, click a value to type it, or nudge it with − and +); vapor level;
+  and boost temperature and time.
+- **Lights** — lantern, stealth mode, auto-off, brightness, the selected
+  profile's color and animation, and the Connect app's mood presets.
+- **Usage** — today, this week, this month and lifetime counts, a daily chart,
+  streaks, your peak hour, and average session length and temperature.
+- **Device** — rename the Peak; model, chamber, battery, firmware, serial and
+  uptime; sleep or power off.
+
+### Where the usage numbers come from
+
+The Peak keeps its own log of heat cycles. Ember reads it when it connects and
+after each session, and counts every cycle that reached temperature;
+`ember sync` does the same on demand. Until the phone app sets the Peak's clock
+after a restart, the log's timestamps count from boot. Ember places those using
+the Peak's current clock, and skips cycles from before a later restart rather
+than guessing their date. For any period the device log no longer covers, the
+cycles Ember saw while connected fill in.
+
+## Command line
+
+The widget runs these under the hood; they also work for scripting or outside
+Omarchy.
 
 ```bash
 ember scan
@@ -61,51 +95,56 @@ ember profile 0 --temp-f 510 --time 75 --color '#ff6a1a'
 ember lantern on
 ember brightness 160
 ember stealth on
+ember stats                    # today / week / month / year / lifetime
+ember sync                     # pull usage history from the Peak's log
 ember waybar
-ember stats                    # dab telemetry: today/week/month/year
 ember sleep
 ember off
 ```
 
-## Waybar
+### Waybar
 
 ```jsonc
 "custom/ember": {
   "exec": "ember waybar",
   "return-type": "json",
   "interval": 2,
-  "on-click": "ember",
+  "on-click": "ember status",
   "on-click-right": "ember heat start"
 }
 ```
 
-## Hyprland
+## Bluetooth adapter
 
-Optional floating window rules are in `packaging/hyprland.conf`.
+Ember uses the first powered adapter BlueZ reports. To pin a specific one when
+you have several, set it in `~/.config/ember/config.json` (`bluetoothctl list`
+shows what you have):
 
-## Keys in the app
-
-| Key | Action |
-|-----|--------|
-| Space | Heat / stop |
-| B | Boost |
-| S | Stop |
-| 1–4 | Profiles |
-
-## Tests
-
-```bash
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest
+```json
+{ "adapter": "hci1" }
 ```
 
-The suite covers the logic that can break silently — the CBOR/colour codec,
-dab-history date maths, config and profile limits, and the daemon liveness
-probe. The BLE and GTK layers need real hardware and a display, so they're
-exercised by hand rather than in CI.
-
-## Uninstall
+## Development
 
 ```bash
-./uninstall.sh
+git clone https://github.com/Auxxed/ember.git
+cd ember
+./install.sh                   # links the checkout in as a development plugin
+~/.local/share/ember/venv/bin/pip install pytest
+~/.local/share/ember/venv/bin/python -m pytest
 ```
+
+Keep virtual environments outside the checkout: `omarchy plugin` refuses
+symlinks inside a plugin folder, and a venv is full of them.
+
+The tests cover the CBOR and color codec, audit-log decoding, dab-history date
+maths, config and profile limits, the daemon liveness probe, and the plugin
+manifest. The Bluetooth layer needs real hardware, so it's exercised by hand.
+
+Protocol work builds on [Fr0st3h/PuffcoBLE](https://github.com/Fr0st3h/PuffcoBLE)
+and the [OldGrowthCrypto Linux/BlueZ fork](https://github.com/OldGrowthCrypto/Puffco);
+audit-log decoding follows [puff.social](https://github.com/puff-social/web).
+
+## License
+
+[MIT](LICENSE)

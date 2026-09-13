@@ -8,8 +8,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-APP_ID = "app.ember.Ember"
-APP_NAME = "Ember"
 SOCKET_NAME = "ember.sock"
 
 DEFAULTS: dict[str, Any] = {
@@ -21,7 +19,6 @@ DEFAULTS: dict[str, Any] = {
     "notify_ready": True,
     "notify_low_battery": True,
     "poll_interval": 1.5,
-    "last_fact": -1,
 }
 
 
@@ -60,7 +57,7 @@ def log_path() -> Path:
 def write_json_atomic(path: Path, data: Any, *, indent: int | None = None) -> None:
     """Write JSON through a temp file and rename.
 
-    The daemon and the GUI both write these files, and a crash or a full
+    The daemon and the CLI both write these files, and a crash or a full
     disk part-way through a plain write leaves a truncated file that the
     next load silently discards.
     """

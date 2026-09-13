@@ -175,6 +175,13 @@ CHARGE_STATE_LABELS = {
     BatteryChargeState.DONE_DISCONNECTED: "Unplugged",
 }
 
+CHARGE_SOURCE_LABELS = {
+    BatteryChargeSource.USB: "USB",
+    BatteryChargeSource.GENERIC_QI: "Qi",
+    BatteryChargeSource.POWER_DOCK: "Dock",
+    BatteryChargeSource.NONE: "Unplugged",
+}
+
 CHAMBER_LABELS = {
     ChamberType.NONE: "No chamber",
     ChamberType.CLASSIC: "Classic",
