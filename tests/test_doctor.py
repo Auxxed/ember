@@ -66,3 +66,21 @@ def test_handoff_says_when_another_computer_has_the_peak():
     check = doctor.check_handoff({"handoff": True}, {"handed_off": True})
     assert check.ok
     assert "another computer" in check.detail
+
+
+def test_handoff_says_when_stay_awake_stops_the_screen_locking():
+    """Handoff hands over on a lock. Stay Awake means that never happens, and
+    a user watching it not happen deserves to know why."""
+    check = doctor.check_handoff({"handoff": True}, None, {"stayAwake": True})
+    # Worth knowing, but the user's own setting is not a fault to be counted.
+    assert check.ok is None
+    assert "1 problem" not in doctor.format_report([check])
+    assert "Stay Awake" in check.detail
+    assert "Super+Ctrl+I" in check.fix
+
+
+def test_handoff_is_quiet_about_idle_when_the_screen_does_lock():
+    check = doctor.check_handoff({"handoff": True}, None, {"stayAwake": False})
+    assert "Stay Awake" not in check.detail
+    # Not an Omarchy desktop at all.
+    assert "Stay Awake" not in doctor.check_handoff({"handoff": True}, None, None).detail

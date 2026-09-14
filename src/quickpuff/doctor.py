@@ -132,7 +132,9 @@ def check_connection(status: dict[str, Any] | None) -> Check:
     return Check("Connection", True, detail)
 
 
-def check_handoff(cfg: dict[str, Any], status: dict[str, Any] | None) -> Check:
+def check_handoff(
+    cfg: dict[str, Any], status: dict[str, Any] | None, idle: dict[str, Any] | None = None
+) -> Check:
     """A Peak traded between two computers shows up here, because the symptom
     on each one looks like a flaky Bluetooth link rather than a tug of war."""
     if cfg.get("handoff") is False:
@@ -142,9 +144,39 @@ def check_handoff(cfg: dict[str, Any], status: dict[str, Any] | None) -> Check:
             "off; this computer keeps the Peak even when it's locked",
             "Sharing the Peak with another computer? Turn it on: quickpuff handoff on",
         )
+    # Handoff gives the Peak up when the screen locks. Stay Awake means it
+    # never does, so the Peak is settled by backing off after losing it
+    # instead — slower, and worth knowing before it looks like a fault.
+    awake = bool(idle and idle.get("stayAwake"))
+    detail = "on; the Peak follows whichever computer you're using"
     if status and status.get("handed_off"):
-        return Check("Handoff", True, "let go for another computer; using this one takes it back")
-    return Check("Handoff", True, "on; the Peak follows whichever computer you're using")
+        detail = "let go for another computer; using this one takes it back"
+    if awake:
+        # Not a fault, so not counted as one: None marks it as worth knowing.
+        return Check(
+            "Handoff",
+            None,
+            f"{detail}; Stay Awake stops this screen locking",
+            "Handoff gives the Peak up when a screen locks, and Stay Awake means this "
+            "one never does. It can still settle the Peak by backing off after losing "
+            "it a few times, but that is slower. Super+Ctrl+I turns Stay Awake off.",
+        )
+    return Check("Handoff", True, detail)
+
+
+def read_idle_state() -> dict[str, Any] | None:
+    """What the Omarchy shell says about idle and Stay Awake, or None when
+    that isn't this desktop."""
+    if not shutil.which("omarchy-shell"):
+        return None
+    code, out = _run(["omarchy-shell", "idle", "status"], timeout=5)
+    if code != 0 or not out:
+        return None
+    try:
+        parsed = json.loads(out)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def check_notifications(found: bool) -> Check:
@@ -204,7 +236,7 @@ async def gather() -> list[Check]:
         check_widget(plugins, omarchy_found),
         check_saved_peak(cfg, paired),
         check_connection(status),
-        check_handoff(cfg, status),
+        check_handoff(cfg, status, read_idle_state()),
         check_notifications(shutil.which("notify-send") is not None),
     ]
 
