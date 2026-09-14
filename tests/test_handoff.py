@@ -390,3 +390,16 @@ def test_the_bar_says_handed_off_not_resting_after_letting_go(tmp_path, capsys):
     print_waybar(d.status)
     out = json.loads(capsys.readouterr().out)
     assert out["tooltip"].startswith("Another computer has the Peak")
+
+
+def test_the_bar_claims_no_battery_it_never_read(capsys):
+    """A daemon started while the other computer has the Peak has never read
+    one, so "0% at the last check" would be inventing a reading."""
+    print_waybar(
+        {"connected": False, "handed_off": True, "battery": 0,
+         "operating_state": "Handed off", "operating_state_id": -1}
+    )
+    out = json.loads(capsys.readouterr().out)
+    assert out["tooltip"] == "Another computer has the Peak"
+    assert out["text"] == "Peak"
+    assert "0%" not in out["tooltip"]

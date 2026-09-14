@@ -255,7 +255,7 @@ def print_waybar(data: dict) -> None:
     # the resting style, which already means "let go, last reading shown".
     handed_off = not connected and not resting and bool(data.get("handed_off"))
     if resting or handed_off:
-        css, text = "resting", battery_text
+        css, text = "resting", battery_text if battery else "Peak"
     elif not connected:
         text = "Peak"
     elif state_id == 7:
@@ -276,7 +276,11 @@ def print_waybar(data: dict) -> None:
     if resting:
         tooltip = f"Resting to save battery · {battery_text} at the last check"
     if handed_off:
-        tooltip = f"Another computer has the Peak · {battery_text} at the last check"
+        # A daemon started while the other computer holds the Peak has never
+        # read a battery, so don't report 0% as though it had.
+        tooltip = "Another computer has the Peak"
+        if battery:
+            tooltip += f" · {battery_text} at the last check"
     if connected and data.get("charge_eta_s"):
         tooltip = f"{tooltip} · full in {format_eta(data['charge_eta_s'])}"
     if connected and data.get("clean_due"):
