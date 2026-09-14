@@ -109,6 +109,11 @@ AWAY_BACKOFF_S = 300.0
 # Running a QuickPuff command claims the Peak for this machine: strikes clear,
 # and a seat logind calls away still counts as in use for this long.
 CLAIM_WINDOW_S = 120.0
+# Losing this many links in a row means the other computer is winning, and
+# every further try steals a working link from whoever is actually using it.
+# Strikes sort this out on their own: a machine that holds a link resets to
+# zero, so only the one that keeps losing ever gets here.
+CONCEDE_AFTER_STRIKES = 6
 
 # Edits to a heat profile re-read just the profiles once taps stop for this long.
 PROFILE_REFRESH_SETTLE_S = 0.8
@@ -181,7 +186,18 @@ def reconnect_delay(strikes: int, seat_occupied: bool, base: float) -> float:
         return max(base, AWAY_BACKOFF_S)
     if strikes <= 0:
         return base
+    if strikes >= CONCEDE_AFTER_STRIKES:
+        return max(base, AWAY_BACKOFF_S)
     return max(base, CONTENTION_BACKOFF_S[min(strikes, len(CONTENTION_BACKOFF_S)) - 1])
+
+
+def conceded(handoff: bool, strikes: int) -> bool:
+    """Has this machine given best to the other one?
+
+    Worth saying out loud in the bar rather than showing a Peak that looks
+    broken: it is working, it just belongs to the other computer right now.
+    """
+    return handoff and strikes >= CONCEDE_AFTER_STRIKES
 
 
 def should_hold_peak(handoff: bool, seat_occupied: bool, since_user_cmd: float) -> bool:
@@ -509,6 +525,15 @@ class QuickPuffDaemon:
                     await self._yield_peak()
                     return
                 delay = reconnect_delay(self._strikes, self._seat_occupied(), base)
+                if conceded(self._handoff, self._strikes) and not self.status.get("handed_off"):
+                    self.status["handed_off"] = True
+                    log.info(
+                        "Handoff: the other computer is winning after %d lost links, "
+                        "leaving it alone for %.0fs at a time",
+                        self._strikes,
+                        delay,
+                    )
+                    await self._broadcast_event("status", self.status)
                 log.info("Reconnect in %.1fs", delay)
                 await asyncio.sleep(delay)
                 try:

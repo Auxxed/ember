@@ -13,9 +13,11 @@ from quickpuff.cli import print_waybar
 from quickpuff.daemon import (
     AWAY_BACKOFF_S,
     CLAIM_WINDOW_S,
+    CONCEDE_AFTER_STRIKES,
     CONTENTION_BACKOFF_S,
     CONTENTION_LINK_S,
     QuickPuffDaemon,
+    conceded,
     reconnect_delay,
     should_hold_peak,
 )
@@ -61,8 +63,30 @@ def test_each_strike_stands_further_off():
     assert delays == sorted(delays)
 
 
-def test_the_standoff_stops_growing_at_the_last_step():
-    assert reconnect_delay(99, True, 2.0) == CONTENTION_BACKOFF_S[-1]
+def test_the_standoff_tops_out_before_conceding():
+    """The ladder's last step is the most it will press while still fighting."""
+    assert reconnect_delay(CONCEDE_AFTER_STRIKES - 1, True, 2.0) == CONTENTION_BACKOFF_S[-1]
+
+
+def test_losing_over_and_over_gives_best_to_the_other_computer():
+    """Each further try steals a working link from whoever is using it, so
+    past this point back off as far as an empty seat would."""
+    assert reconnect_delay(CONCEDE_AFTER_STRIKES, True, 2.0) == AWAY_BACKOFF_S
+    assert reconnect_delay(99, True, 2.0) == AWAY_BACKOFF_S
+
+
+def test_conceding_is_only_a_handoff_idea():
+    assert conceded(True, CONCEDE_AFTER_STRIKES) is True
+    assert conceded(True, CONCEDE_AFTER_STRIKES - 1) is False
+    # With handoff off this machine never gives way, however badly it loses.
+    assert conceded(False, 99) is False
+
+
+def test_the_winner_never_concedes():
+    """Strikes reset whenever a link holds, so the machine that is actually
+    keeping the Peak can't back itself off by accident."""
+    assert conceded(True, 0) is False
+    assert reconnect_delay(0, True, 2.0) == 2.0
 
 
 def test_an_empty_seat_stops_racing_for_the_peak():
