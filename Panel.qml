@@ -93,6 +93,8 @@ Panel {
   readonly property bool connected: statusData.connected === true
   // Battery saver let go of the Peak; opening this panel reconnects it.
   readonly property bool resting: !connected && statusData.resting === true
+  // Handoff gave the Peak to another computer; Connect takes it back.
+  readonly property bool handedOff: !connected && !resting && statusData.handed_off === true
   readonly property var profiles: statusData.profiles || []
   readonly property bool hasProfiles: connected && profiles.length > 0
 
@@ -215,7 +217,7 @@ Panel {
   // The Peak refuses to heat near 5%; warn a little before that.
   readonly property bool lowHeatBattery: connected && !pluggedIn && Number(statusData.battery) <= 10
   readonly property string metaLabel: {
-    if (!connected) return needsSetup ? "Setup needed" : (resting ? "Resting · waking…" : (connecting ? "Connecting…" : "Disconnected"))
+    if (!connected) return needsSetup ? "Setup needed" : (resting ? "Resting · waking…" : (handedOff ? "On another computer" : (connecting ? "Connecting…" : "Disconnected")))
     var s = String(statusData.operating_state || "Connected")
     if (heating && targetLabel !== "") s += " · " + targetLabel
     else if (chamberLabel !== "") s += " · " + chamberLabel
@@ -1305,7 +1307,7 @@ Panel {
 
             ActionButton {
               width: parent.width
-              label: root.needsSetup ? "Finish setup" : (root.resting ? "Waking…" : (root.connecting ? "Connecting…" : "Connect"))
+              label: root.needsSetup ? "Finish setup" : (root.resting ? "Waking…" : (root.handedOff ? "Take it back" : (root.connecting ? "Connecting…" : "Connect")))
               glyph: root.needsSetup ? "\uf0ad" : "\uf293"
               tint: Color.accent
               emphasized: true
@@ -1364,7 +1366,9 @@ Panel {
                 ? "QuickPuff's background service isn't set up yet. Setup opens a terminal and installs it for your user; no root access is needed."
                 : root.resting
                   ? "Battery saver let the Peak rest to save its battery. Reconnecting now…"
-                  : "Wake the Peak and keep it close to this computer. Disconnect the phone app first; the device accepts one connection at a time."
+                  : root.handedOff
+                    ? "Another computer running QuickPuff has the Peak. Take it back to use it here; that computer will let go and pick it up again when you return to it."
+                    : "Wake the Peak and keep it close to this computer. Disconnect the phone app first; the device accepts one connection at a time."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

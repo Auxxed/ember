@@ -15,6 +15,9 @@ DEFAULTS: dict[str, Any] = {
     "device_name": "",
     "adapter": "",  # "" auto-detects; set "hci1" to pin a specific radio
     "auto_connect": True,
+    # Two computers can't share a Peak: let go of it when this seat is locked
+    # or switched away, and take it back when someone returns.
+    "handoff": True,
     "units": "F",
     "notify_ready": True,
     "notify_low_battery": True,

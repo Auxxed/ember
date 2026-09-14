@@ -19,6 +19,7 @@ from . import __version__, audit, faults, history
 from .ble import LoraxError, PuffcoBLE
 from .constants import PROFILE_COUNT, OperatingState
 from .paths import load_config, save_config, socket_path
+from .presence import SeatPresence
 from .product_info import is_proxy
 from .utils import PuffcoUtils
 from .vapor import snap as snap_vapor, value_for as vapor_value
@@ -95,6 +96,20 @@ IDLE_SLEEP_S = 600.0
 # Bluetooth link keeps its radio busy. So battery saver rests the Peak by
 # letting go of it, and checks in this often for the battery and new dabs.
 REST_CHECK_S = 900.0
+# Handoff: the Peak keeps one Bluetooth link, so a second computer running
+# QuickPuff can only have it by taking it. A link that dies sooner than this
+# was almost certainly taken rather than lost.
+CONTENTION_LINK_S = 45.0
+# How far to stand off after each strike, so two machines stop trading the
+# Peak back and forth every couple of seconds.
+CONTENTION_BACKOFF_S = (8.0, 20.0, 45.0, 120.0)
+# An empty seat never races: it waits this long between tries whatever its
+# strike count, so the computer someone is actually using wins.
+AWAY_BACKOFF_S = 300.0
+# Running a QuickPuff command claims the Peak for this machine: strikes clear,
+# and a seat logind calls away still counts as in use for this long.
+CLAIM_WINDOW_S = 120.0
+
 # Edits to a heat profile re-read just the profiles once taps stop for this long.
 PROFILE_REFRESH_SETTLE_S = 0.8
 # Answered from what the daemon already knows, so they never queue behind a
@@ -115,6 +130,8 @@ LOCAL_COMMANDS = frozenset(
         "recap",
         "set_qtip_reminder",
         "set_battery_saver",
+        "set_handoff",
+        "claim",
         "set_clean_every",
         "mark_cleaned",
         "stats",
@@ -151,6 +168,32 @@ def idle_sleep_due(idle_since: Optional[float], now: float, last_user_cmd: float
     if idle_since is None or watching:
         return False
     return now - idle_since >= IDLE_SLEEP_S and now - last_user_cmd >= IDLE_SLEEP_S
+
+
+def reconnect_delay(strikes: int, seat_occupied: bool, base: float) -> float:
+    """How long to wait before reaching for the Peak again.
+
+    With nothing contending this is the caller's own backoff. Once short-lived
+    links show another computer wants the same Peak, an occupied seat settles
+    into a steady retry while an empty one backs a long way off.
+    """
+    if not seat_occupied:
+        return max(base, AWAY_BACKOFF_S)
+    if strikes <= 0:
+        return base
+    return max(base, CONTENTION_BACKOFF_S[min(strikes, len(CONTENTION_BACKOFF_S)) - 1])
+
+
+def should_hold_peak(handoff: bool, seat_occupied: bool, since_user_cmd: float) -> bool:
+    """Whether this machine should be holding the Peak at all.
+
+    Handoff gives it to whichever computer someone is using, so a locked or
+    switched-away seat lets go — unless a command was just run on it, which
+    is how a machine driven over ssh keeps its claim.
+    """
+    if not handoff or seat_occupied:
+        return True
+    return since_user_cmd < CLAIM_WINDOW_S
 
 
 def _as_bool(value: Any) -> bool:
@@ -263,6 +306,13 @@ class QuickPuffDaemon:
         self._recap_task: Optional[asyncio.Task] = None
         self._saver_sleep_task: Optional[asyncio.Task] = None
         self._resting = False
+        self._handoff = _as_bool(load_config().get("handoff", True))
+        self._presence: Optional[SeatPresence] = None
+        # Consecutive short-lived links: the other computer taking the Peak.
+        self._strikes = 0
+        self._link_started = float("-inf")
+        # Let go for another computer, as opposed to resting or disconnected.
+        self._yielded = False
         self._checking_in = False
         self._rest_task: Optional[asyncio.Task] = None
         self._wake_task: Optional[asyncio.Task] = None
@@ -273,6 +323,7 @@ class QuickPuffDaemon:
         self._server: Optional[asyncio.AbstractServer] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self.status["battery_saver"] = self.battery_saver
+        self.status["handoff"] = self._handoff
         self.status["qtip_reminder"] = self.qtip_reminder
         self.status["daily_limit"] = self.daily_limit
         self.status["weekly_recap"] = self.weekly_recap
@@ -299,6 +350,7 @@ class QuickPuffDaemon:
             "chamber_id": -1,
             "operating_state": "Disconnected",
             "operating_state_id": -1,
+            "handed_off": False,
             "heater_temp_c": None,
             "heater_temp_f": None,
             "state_elapsed_s": None,
@@ -413,10 +465,24 @@ class QuickPuffDaemon:
         self.status.update(self._clean_fields())
 
     def _on_ble_drop(self) -> None:
-        if self._resting:
-            # Battery saver let go of the Peak on purpose.
+        if self._resting or self._yielded:
+            # Battery saver, or handoff, let go of the Peak on purpose.
             return
-        log.warning("BLE link dropped")
+        held = time.monotonic() - self._link_started
+        if held < CONTENTION_LINK_S:
+            self._strikes += 1
+            log.warning(
+                "BLE link dropped after %.0fs — another computer may want this Peak (strike %d)",
+                held,
+                self._strikes,
+            )
+        else:
+            self._strikes = 0
+            log.warning("BLE link dropped")
+        # connect() retries internally, so each drop starts the clock for the
+        # next attempt: without this a third try is measured from the first and
+        # a short link reads as a long one.
+        self._link_started = time.monotonic()
         self.status["connected"] = False
         self.status["operating_state"] = "Disconnected"
         self.status["operating_state_id"] = -1
@@ -436,8 +502,13 @@ class QuickPuffDaemon:
             return
 
         async def _retry():
-            delay = 2.0
+            base = 2.0
             while self._want_connected and not (self.device and self.device.is_connected):
+                if not self._hold_allowed():
+                    log.info("Handoff: nobody at this computer, leaving the Peak alone")
+                    await self._yield_peak()
+                    return
+                delay = reconnect_delay(self._strikes, self._seat_occupied(), base)
                 log.info("Reconnect in %.1fs", delay)
                 await asyncio.sleep(delay)
                 try:
@@ -445,7 +516,7 @@ class QuickPuffDaemon:
                     return
                 except Exception as exc:
                     log.warning("Reconnect failed: %s", exc)
-                    delay = min(delay * 1.6, 20.0)
+                    base = min(base * 1.6, 20.0)
 
         self._reconnect_task = asyncio.create_task(_retry())
 
@@ -510,6 +581,9 @@ class QuickPuffDaemon:
             debug=self.debug,
             disconnected_callback=self._on_ble_drop,
         )
+        # From here a drop is measurable: one that lands mid-handshake is the
+        # clearest sign the other computer took the Peak.
+        self._link_started = time.monotonic()
         await ble.connect()
         try:
             await ble.require_peak_pro()
@@ -551,6 +625,8 @@ class QuickPuffDaemon:
             }
         )
         self._end_rest()
+        self._yielded = False
+        self.status["handed_off"] = False
         self._start_poll()
         await self._refresh_clean(self.status.get("total_dabs"), notify=True)
         if sync:
@@ -665,6 +741,7 @@ class QuickPuffDaemon:
             self.device = None
         self.status = self._empty_status()
         self.status["battery_saver"] = self.battery_saver
+        self.status["handoff"] = self._handoff
         self.status["qtip_reminder"] = self.qtip_reminder
         self.status["daily_limit"] = self.daily_limit
         self.status["weekly_recap"] = self.weekly_recap
@@ -854,6 +931,101 @@ class QuickPuffDaemon:
         if task and not task.done() and not self._checking_in and task is not asyncio.current_task():
             task.cancel()
             self._rest_task = None
+
+    def _seat_occupied(self) -> bool:
+        """Handoff switched off, or no logind to ask, means this seat always
+        counts as in use — the behaviour QuickPuff had before handoff."""
+        if not self._handoff or not self._presence or not self._presence.available:
+            return True
+        return self._presence.active
+
+    def _hold_allowed(self) -> bool:
+        return should_hold_peak(
+            self._handoff, self._seat_occupied(), time.monotonic() - self._last_user_cmd
+        )
+
+    async def _yield_peak(self) -> None:
+        """Hand the Peak to the other computer: let go without forgetting it,
+        so coming back to this one picks it up again. Unlike Disconnect this
+        leaves auto_connect alone."""
+        if self._yielded:
+            return
+        self._yielded = True
+        self._cancel_saver_sleep()
+        self._stop_poll()
+        dev, self.device = self.device, None
+        if dev:
+            try:
+                await dev.disconnect()
+            except Exception:
+                log.debug("handoff: disconnect failed", exc_info=True)
+        self.status.update(
+            {
+                "connected": False,
+                "handed_off": True,
+                "last_seen": time.time(),
+                "operating_state": "Handed off",
+                "operating_state_id": -1,
+                "heater_temp_c": None,
+                "heater_temp_f": None,
+            }
+        )
+        log.info("Handoff: let go of the Peak for another computer")
+        await self._broadcast_event("status", self.status)
+
+    async def _claim_peak(self, reason: str) -> dict:
+        """Someone is using this computer: take the Peak back now, dropping
+        the standoff that was letting the other machine keep it."""
+        self._strikes = 0
+        self._yielded = False
+        self.status["handed_off"] = False
+        if self.device and self.device.is_connected:
+            return self.status
+        if not self._want_connected:
+            return self.status
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+        self._reconnect_task = None
+        log.info("Handoff: %s — claiming the Peak", reason)
+        self._schedule_reconnect()
+        return self.status
+
+    def _on_seat_change(self, active: bool) -> None:
+        """logind says the session locked, unlocked or was switched away."""
+        if not self._handoff or not self._loop:
+            return
+        if active:
+            self._spawn(self._claim_peak("back at this computer"))
+        else:
+            self._spawn(self._release_for_handoff())
+
+    async def _release_for_handoff(self) -> None:
+        if self._hold_allowed():
+            return
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
+        await self._yield_peak()
+
+    async def _set_handoff(self, enable: bool) -> dict:
+        cfg = load_config()
+        cfg["handoff"] = bool(enable)
+        save_config(cfg)
+        self._handoff = bool(enable)
+        self.status["handoff"] = self._handoff
+        if enable:
+            if not self._presence:
+                self._presence = SeatPresence(on_change=self._on_seat_change)
+                await self._presence.start()
+            await self._release_for_handoff()
+        else:
+            if self._presence:
+                await self._presence.stop()
+                self._presence = None
+            # Back to holding the Peak whatever the other computer is doing.
+            await self._claim_peak("handoff switched off")
+        await self._broadcast_event("status", self.status)
+        return self.status
 
     def _rest_allowed(self) -> bool:
         return (
@@ -1295,6 +1467,11 @@ class QuickPuffDaemon:
             return {"devices": devices}
         if cmd == "connect":
             self._auto_reconnect = bool(args.get("auto_reconnect", True))
+            # Pressing Connect is as deliberate as it gets: drop any handoff
+            # standoff so this computer wins the Peak back.
+            self._strikes = 0
+            self._yielded = False
+            self._last_user_cmd = time.monotonic()
             return await self._connect(args.get("device_name"), args.get("device_mac"))
         if cmd == "disconnect":
             return await self._disconnect(forget=True)
@@ -1337,6 +1514,11 @@ class QuickPuffDaemon:
             return await self._set_qtip_reminder(_as_bool(args.get("enable")))
         if cmd == "set_battery_saver":
             return await self._set_battery_saver(_as_bool(args.get("enable")))
+        if cmd == "set_handoff":
+            return await self._set_handoff(_as_bool(args.get("enable")))
+        if cmd == "claim":
+            self._last_user_cmd = time.monotonic()
+            return await self._claim_peak("claimed by hand")
         if cmd == "set_clean_every":
             return await self._set_clean_every(args.get("dabs"))
         if cmd == "mark_cleaned":
@@ -1370,6 +1552,8 @@ class QuickPuffDaemon:
 
         dev = self._require_device()
         self._last_user_cmd = time.monotonic()
+        # Using QuickPuff here settles any tug of war in this machine's favour.
+        self._strikes = 0
         self._poll_wake.set()
 
         if cmd == "start_heat":
@@ -1590,6 +1774,11 @@ class QuickPuffDaemon:
             os.umask(old_umask)
         os.chmod(self.socket_path, 0o600)
         log.info("Listening on %s", self.socket_path)
+        # Before resuming: the first reconnect should already know whether
+        # anyone is sitting here.
+        if self._handoff:
+            self._presence = SeatPresence(on_change=self._on_seat_change)
+            await self._presence.start()
         self._resume_last_device()
         self._recap_task = asyncio.create_task(self._recap_loop())
 
@@ -1616,6 +1805,9 @@ class QuickPuffDaemon:
                 task.cancel()
         if self._recap_task:
             self._recap_task.cancel()
+        if self._presence:
+            await self._presence.stop()
+            self._presence = None
         self._stop_poll()
         if self.device:
             try:

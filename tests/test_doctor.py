@@ -54,3 +54,15 @@ def test_report_counts_problems_and_shows_fixes_only_for_them():
     assert "never shown" not in report
     assert "→ bluetoothctl power on" in report
     assert report.endswith("1 problem to fix.")
+
+
+def test_handoff_off_is_flagged_only_as_something_to_know():
+    check = doctor.check_handoff({"handoff": False}, None)
+    assert check.ok is None
+    assert "quickpuff handoff on" in check.fix
+
+
+def test_handoff_says_when_another_computer_has_the_peak():
+    check = doctor.check_handoff({"handoff": True}, {"handed_off": True})
+    assert check.ok
+    assert "another computer" in check.detail

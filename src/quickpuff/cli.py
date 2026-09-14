@@ -250,7 +250,11 @@ def print_waybar(data: dict) -> None:
         temp = _profile_temp(data, units)
     css = "disconnected"
     resting = not connected and bool(data.get("resting"))
-    if resting:
+    # Handed to another computer: the Peak is fine, it just isn't ours right
+    # now, so show the last reading rather than a dead-looking bar. It borrows
+    # the resting style, which already means "let go, last reading shown".
+    handed_off = not connected and not resting and bool(data.get("handed_off"))
+    if resting or handed_off:
         css, text = "resting", battery_text
     elif not connected:
         text = "Peak"
@@ -271,6 +275,8 @@ def print_waybar(data: dict) -> None:
     tooltip = state if not connected else f"{state} · {battery_text} · {temp}".strip(" ·")
     if resting:
         tooltip = f"Resting to save battery · {battery_text} at the last check"
+    if handed_off:
+        tooltip = f"Another computer has the Peak · {battery_text} at the last check"
     if connected and data.get("charge_eta_s"):
         tooltip = f"{tooltip} · full in {format_eta(data['charge_eta_s'])}"
     if connected and data.get("clean_due"):
@@ -356,6 +362,11 @@ async def async_main(argv: list[str] | None = None) -> int:
 
     saver = sub.add_parser("saver", help="Rest the Peak 30 s after each session or 10 min idle: lantern off, Bluetooth let go until needed")
     saver.add_argument("action", choices=["on", "off"])
+
+    handoff = sub.add_parser("handoff", help="Share the Peak with another computer: let go when this one locks, take it back when you return")
+    handoff.add_argument("action", choices=["on", "off"])
+
+    sub.add_parser("claim", help="Take the Peak from whichever computer has it")
 
     preserve = sub.add_parser("preserve", help="Battery Preservation: charge to 80%% only (on) or to 100%% (off)")
     preserve.add_argument("action", choices=["on", "off"])
@@ -552,6 +563,11 @@ async def async_main(argv: list[str] | None = None) -> int:
     elif cmd == "saver":
         await call("set_battery_saver", {"enable": args.action == "on"})
         print_status(await call("status"), raw)
+    elif cmd == "handoff":
+        await call("set_handoff", {"enable": args.action == "on"})
+        print_status(await call("status"), raw)
+    elif cmd == "claim":
+        print_status(await call("claim"), raw)
     elif cmd == "preserve":
         result = await call("set_max_charge", {"preserve": args.action == "on"})
         limit = result.get("max_charge")

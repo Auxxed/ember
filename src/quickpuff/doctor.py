@@ -132,6 +132,21 @@ def check_connection(status: dict[str, Any] | None) -> Check:
     return Check("Connection", True, detail)
 
 
+def check_handoff(cfg: dict[str, Any], status: dict[str, Any] | None) -> Check:
+    """A Peak traded between two computers shows up here, because the symptom
+    on each one looks like a flaky Bluetooth link rather than a tug of war."""
+    if cfg.get("handoff") is False:
+        return Check(
+            "Handoff",
+            None,
+            "off; this computer keeps the Peak even when it's locked",
+            "Sharing the Peak with another computer? Turn it on: quickpuff handoff on",
+        )
+    if status and status.get("handed_off"):
+        return Check("Handoff", True, "let go for another computer; using this one takes it back")
+    return Check("Handoff", True, "on; the Peak follows whichever computer you're using")
+
+
 def check_notifications(found: bool) -> Check:
     if found:
         return Check("Notifications", True, "notify-send found")
@@ -189,6 +204,7 @@ async def gather() -> list[Check]:
         check_widget(plugins, omarchy_found),
         check_saved_peak(cfg, paired),
         check_connection(status),
+        check_handoff(cfg, status),
         check_notifications(shutil.which("notify-send") is not None),
     ]
 
