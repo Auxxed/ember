@@ -102,11 +102,15 @@ class PuffcoBLE:
         device_mac: Optional[str] = None,
         debug: bool = False,
         disconnected_callback=None,
+        on_attempt=None,
     ):
         self.device_name = device_name
         self.device_mac = device_mac
         self.debug = debug
         self._user_disconnected_cb = disconnected_callback
+        # connect() retries internally; this fires as each try starts, so a
+        # caller timing how long a link lasted measures the right try.
+        self._on_attempt = on_attempt
         self.lorax_sequence = 1
         self.client: Optional[BleakClient] = None
         self._pending: dict[int, asyncio.Future] = {}
@@ -340,6 +344,11 @@ class PuffcoBLE:
 
                 self.address = address
                 log.info("Connecting to %s attempt %s", address, attempt)
+                if self._on_attempt:
+                    try:
+                        self._on_attempt()
+                    except Exception:
+                        log.debug("on_attempt callback failed", exc_info=True)
                 client = None
                 try:
                     client = await self._gatt_connect(address)

@@ -267,3 +267,25 @@ def test_pressing_connect_takes_the_peak_back(tmp_path):
     assert d._strikes == 0
     assert d._yielded is False
     assert seen == [(None, None)]
+
+
+def test_a_retry_that_never_linked_still_restarts_the_clock(tmp_path):
+    """A try that fails outright never reaches _on_ble_drop, so only the
+    on_attempt hook keeps the next drop measured against the right try."""
+    d = make_daemon(tmp_path, FakePeak())
+    d._link_started = time.monotonic() - 600
+    d._mark_attempt()
+    d._on_ble_drop()
+    assert d._strikes == 1
+
+
+def test_ble_reports_every_internal_attempt(tmp_path):
+    """The hook has to fire per try inside connect(), not once per call."""
+    import inspect
+
+    from quickpuff.ble import PuffcoBLE
+
+    src = inspect.getsource(PuffcoBLE.connect)
+    body = src.split("for attempt in range", 1)
+    assert len(body) == 2, "connect() no longer loops over attempts"
+    assert "self._on_attempt()" in body[1], "on_attempt is not called inside the retry loop"

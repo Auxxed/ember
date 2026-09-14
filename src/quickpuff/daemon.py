@@ -580,10 +580,8 @@ class QuickPuffDaemon:
             device_mac=mac,
             debug=self.debug,
             disconnected_callback=self._on_ble_drop,
+            on_attempt=self._mark_attempt,
         )
-        # From here a drop is measurable: one that lands mid-handshake is the
-        # clearest sign the other computer took the Peak.
-        self._link_started = time.monotonic()
         await ble.connect()
         try:
             await ble.require_peak_pro()
@@ -931,6 +929,13 @@ class QuickPuffDaemon:
         if task and not task.done() and not self._checking_in and task is not asyncio.current_task():
             task.cancel()
             self._rest_task = None
+
+    def _mark_attempt(self) -> None:
+        """A fresh try at the link starts the clock that decides whether the
+        next drop was the other computer taking it. connect() retries inside
+        itself, and a try that fails outright never reaches _on_ble_drop, so
+        timing from the call would read a short link as a long one."""
+        self._link_started = time.monotonic()
 
     def _seat_occupied(self) -> bool:
         """Handoff switched off, or no logind to ask, means this seat always
