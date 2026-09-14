@@ -1,5 +1,8 @@
 import asyncio
 
+import pytest
+
+import quickpuff.daemon as daemon_mod
 from quickpuff.constants import OperatingState
 from quickpuff.daemon import QuickPuffDaemon
 from quickpuff.paths import load_config
@@ -9,6 +12,11 @@ PREHEAT = int(OperatingState.HEAT_CYCLE_PREHEAT)
 ACTIVE = int(OperatingState.HEAT_CYCLE_ACTIVE)
 FADE = int(OperatingState.HEAT_CYCLE_FADE)
 SLEEP = int(OperatingState.SLEEP)
+
+
+@pytest.fixture(autouse=True)
+def no_reminder_delay(monkeypatch):
+    monkeypatch.setattr(daemon_mod, "QTIP_REMINDER_DELAY_S", 0)
 
 
 def daemon(tmp_path):
@@ -22,6 +30,7 @@ def run_states(d, states):
     async def go():
         for prev, new in zip(states, states[1:]):
             await d._track_session_end(prev, new)
+        await asyncio.gather(*d._tasks)
 
     asyncio.run(go())
 
@@ -51,6 +60,22 @@ def test_reminder_can_be_switched_off_and_stays_off(tmp_path):
     run_states(d, [PREHEAT, ACTIVE, FADE, IDLE])
     assert d.sent == []
     assert daemon(tmp_path).qtip_reminder is False
+
+
+def test_reminder_waits_after_the_session_ends(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon_mod, "QTIP_REMINDER_DELAY_S", 12.0)
+    d = daemon(tmp_path)
+
+    async def go():
+        await d._track_session_end(PREHEAT, ACTIVE)
+        await d._track_session_end(ACTIVE, IDLE)
+        await asyncio.sleep(0.05)
+        assert len(d._tasks) == 1
+        assert d.sent == []
+        for task in d._tasks:
+            task.cancel()
+
+    asyncio.run(go())
 
 
 def test_on_by_default(tmp_path):

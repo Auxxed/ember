@@ -74,6 +74,8 @@ HEAT_STATES = {
 CYCLE_STATES = HEAT_STATES | {int(OperatingState.HEAT_CYCLE_FADE)}
 # After a cycle returns to idle, wait so a second dab isn't cut off.
 BATTERY_SAVER_SLEEP_S = 30.0
+# The Q-tip reminder waits this long after a session ends.
+QTIP_REMINDER_DELAY_S = 12.0
 
 # Polling: quick while heating, steady while the panel is open, and slow the
 # rest of the time so the Peak's radio isn't kept busy all day.
@@ -1088,9 +1090,10 @@ class QuickPuffDaemon:
         if prev_state in CYCLE_STATES and new_state not in CYCLE_STATES:
             reached, self._session_reached_temp = self._session_reached_temp, False
             if reached:
-                await self._notify_qtip()
+                self._spawn(self._notify_qtip())
 
     async def _notify_qtip(self) -> None:
+        await asyncio.sleep(QTIP_REMINDER_DELAY_S)
         title = "Q-tip time"
         body = f"Swab the {self._peak_name()} chamber while it's still warm."
         await self._broadcast_event("notify", {"title": title, "body": body})
