@@ -103,9 +103,9 @@ CONTENTION_LINK_S = 45.0
 # How far to stand off after each strike, so two machines stop trading the
 # Peak back and forth every couple of seconds.
 CONTENTION_BACKOFF_S = (8.0, 20.0, 45.0, 120.0)
-# An empty seat never races: it waits this long between tries whatever its
-# strike count, so the computer someone is actually using wins.
-AWAY_BACKOFF_S = 300.0
+# Once this machine has given best, it only looks in this often — enough to
+# notice the other computer going away, rare enough to stop interrupting it.
+CONCEDED_BACKOFF_S = 300.0
 # Running a QuickPuff command claims the Peak for this machine: strikes clear,
 # and a seat logind calls away still counts as in use for this long.
 CLAIM_WINDOW_S = 120.0
@@ -175,19 +175,20 @@ def idle_sleep_due(idle_since: Optional[float], now: float, last_user_cmd: float
     return now - idle_since >= IDLE_SLEEP_S and now - last_user_cmd >= IDLE_SLEEP_S
 
 
-def reconnect_delay(strikes: int, seat_occupied: bool, base: float) -> float:
+def reconnect_delay(strikes: int, base: float) -> float:
     """How long to wait before reaching for the Peak again.
 
-    With nothing contending this is the caller's own backoff. Once short-lived
-    links show another computer wants the same Peak, an occupied seat settles
-    into a steady retry while an empty one backs a long way off.
+    With nothing contending this is the caller's own backoff. Short-lived
+    links mean another computer wants the same Peak, so press more gently the
+    longer this one keeps losing, and barely at all once it has given best.
+
+    An empty seat is not handled here: that machine lets the Peak go outright
+    rather than waiting longer between tries.
     """
-    if not seat_occupied:
-        return max(base, AWAY_BACKOFF_S)
     if strikes <= 0:
         return base
     if strikes >= CONCEDE_AFTER_STRIKES:
-        return max(base, AWAY_BACKOFF_S)
+        return max(base, CONCEDED_BACKOFF_S)
     return max(base, CONTENTION_BACKOFF_S[min(strikes, len(CONTENTION_BACKOFF_S)) - 1])
 
 
@@ -524,7 +525,9 @@ class QuickPuffDaemon:
                     log.info("Handoff: nobody at this computer, leaving the Peak alone")
                     await self._yield_peak()
                     return
-                delay = reconnect_delay(self._strikes, self._seat_occupied(), base)
+                # Reaching here means holding is allowed, so a locked seat is
+                # someone driving this machine over ssh: press on as normal.
+                delay = reconnect_delay(self._strikes, base)
                 if conceded(self._handoff, self._strikes) and not self.status.get("handed_off"):
                     self.status["handed_off"] = True
                     log.info(

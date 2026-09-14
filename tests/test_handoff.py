@@ -11,7 +11,7 @@ import time
 
 from quickpuff.cli import print_waybar
 from quickpuff.daemon import (
-    AWAY_BACKOFF_S,
+    CONCEDED_BACKOFF_S,
     CLAIM_WINDOW_S,
     CONCEDE_AFTER_STRIKES,
     CONTENTION_BACKOFF_S,
@@ -53,26 +53,26 @@ def make_daemon(tmp_path, peak=None, active=True):
 # --- the two decisions, on their own ---------------------------------------
 
 def test_a_quiet_link_reconnects_at_the_old_gentle_pace():
-    assert reconnect_delay(0, True, 2.0) == 2.0
-    assert reconnect_delay(0, True, 12.8) == 12.8
+    assert reconnect_delay(0, 2.0) == 2.0
+    assert reconnect_delay(0, 12.8) == 12.8
 
 
 def test_each_strike_stands_further_off():
-    delays = [reconnect_delay(n, True, 2.0) for n in range(1, len(CONTENTION_BACKOFF_S) + 1)]
+    delays = [reconnect_delay(n, 2.0) for n in range(1, len(CONTENTION_BACKOFF_S) + 1)]
     assert delays == list(CONTENTION_BACKOFF_S)
     assert delays == sorted(delays)
 
 
 def test_the_standoff_tops_out_before_conceding():
     """The ladder's last step is the most it will press while still fighting."""
-    assert reconnect_delay(CONCEDE_AFTER_STRIKES - 1, True, 2.0) == CONTENTION_BACKOFF_S[-1]
+    assert reconnect_delay(CONCEDE_AFTER_STRIKES - 1, 2.0) == CONTENTION_BACKOFF_S[-1]
 
 
 def test_losing_over_and_over_gives_best_to_the_other_computer():
     """Each further try steals a working link from whoever is using it, so
     past this point back off as far as an empty seat would."""
-    assert reconnect_delay(CONCEDE_AFTER_STRIKES, True, 2.0) == AWAY_BACKOFF_S
-    assert reconnect_delay(99, True, 2.0) == AWAY_BACKOFF_S
+    assert reconnect_delay(CONCEDE_AFTER_STRIKES, 2.0) == CONCEDED_BACKOFF_S
+    assert reconnect_delay(99, 2.0) == CONCEDED_BACKOFF_S
 
 
 def test_conceding_is_only_a_handoff_idea():
@@ -86,12 +86,13 @@ def test_the_winner_never_concedes():
     """Strikes reset whenever a link holds, so the machine that is actually
     keeping the Peak can't back itself off by accident."""
     assert conceded(True, 0) is False
-    assert reconnect_delay(0, True, 2.0) == 2.0
+    assert reconnect_delay(0, 2.0) == 2.0
 
 
-def test_an_empty_seat_stops_racing_for_the_peak():
-    assert reconnect_delay(0, False, 2.0) == AWAY_BACKOFF_S
-    assert reconnect_delay(3, False, 2.0) == AWAY_BACKOFF_S
+def test_an_empty_seat_is_not_a_slower_retry_but_no_retry():
+    """It lets the Peak go outright, so the delay ladder never sees it —
+    see the yield tests below."""
+    assert should_hold_peak(True, False, CLAIM_WINDOW_S + 1) is False
 
 
 def test_handoff_off_keeps_the_peak_whatever_the_other_computer_wants():
