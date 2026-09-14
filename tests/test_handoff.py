@@ -14,11 +14,13 @@ from quickpuff.daemon import (
     CONCEDED_BACKOFF_S,
     CLAIM_WINDOW_S,
     CONCEDE_AFTER_STRIKES,
+    SETTLED_LINK_S,
     CONTENTION_BACKOFF_S,
     CONTENTION_LINK_S,
     QuickPuffDaemon,
     conceded,
     reconnect_delay,
+    strikes_after_drop,
     should_hold_peak,
 )
 
@@ -122,10 +124,20 @@ def test_a_link_that_dies_young_counts_as_the_other_computer(tmp_path):
     assert d._strikes == 2
 
 
-def test_a_link_that_lasted_was_simply_lost(tmp_path):
+def test_holding_the_peak_a_while_takes_one_strike_off(tmp_path):
+    """Not a clean slate: two machines trading it a minute at a time would
+    reset each other forever and neither would ever give way."""
     d = make_daemon(tmp_path, FakePeak())
     d._strikes = 3
     d._link_started = time.monotonic() - (CONTENTION_LINK_S + 1)
+    d._on_ble_drop()
+    assert d._strikes == 2
+
+
+def test_keeping_the_peak_to_itself_forgets_the_argument(tmp_path):
+    d = make_daemon(tmp_path, FakePeak())
+    d._strikes = 3
+    d._link_started = time.monotonic() - (SETTLED_LINK_S + 1)
     d._on_ble_drop()
     assert d._strikes == 0
 
@@ -234,7 +246,7 @@ def test_each_retry_inside_one_connect_is_timed_on_its_own(tmp_path):
     d._on_ble_drop()
     assert d._strikes == 2
     # And a long gap after a drop still reads as a link that held.
-    d._link_started = time.monotonic() - (CONTENTION_LINK_S + 1)
+    d._link_started = time.monotonic() - (SETTLED_LINK_S + 1)
     d._on_ble_drop()
     assert d._strikes == 0
 
@@ -403,3 +415,58 @@ def test_the_bar_claims_no_battery_it_never_read(capsys):
     assert out["tooltip"] == "Another computer has the Peak"
     assert out["text"] == "Peak"
     assert "0%" not in out["tooltip"]
+
+
+# --- the score that decides who gives way ----------------------------------
+
+def test_a_link_taken_early_is_a_strike_against():
+    assert strikes_after_drop(0, 1.0) == 1
+    assert strikes_after_drop(3, CONTENTION_LINK_S - 1) == 4
+
+
+def test_a_link_held_a_while_counts_in_this_machine_s_favour():
+    assert strikes_after_drop(3, CONTENTION_LINK_S + 1) == 2
+    assert strikes_after_drop(1, SETTLED_LINK_S - 1) == 0
+
+
+def test_the_score_never_goes_below_nothing():
+    assert strikes_after_drop(0, CONTENTION_LINK_S + 1) == 0
+
+
+def test_trading_the_peak_evenly_still_settles_it():
+    """The failure this scoring exists to fix: two machines alternating
+    minute-long holds used to reset each other forever, so neither ever
+    conceded and the Peak was never left alone.
+
+    Losing twice for every win, a machine reaches the point of giving way.
+    """
+    strikes = 0
+    for _ in range(12):
+        strikes = strikes_after_drop(strikes, 2.0)   # taken off it
+        strikes = strikes_after_drop(strikes, 2.0)   # taken off it again
+        strikes = strikes_after_drop(strikes, 90.0)  # won one back
+        if strikes >= CONCEDE_AFTER_STRIKES:
+            break
+    assert strikes >= CONCEDE_AFTER_STRIKES
+
+
+def test_the_machine_winning_the_exchanges_never_gives_way():
+    """Mirror of the above: it must be the loser that concedes, not both."""
+    strikes = 0
+    for _ in range(12):
+        strikes = strikes_after_drop(strikes, 90.0)  # held it
+        strikes = strikes_after_drop(strikes, 90.0)  # held it again
+        strikes = strikes_after_drop(strikes, 2.0)   # lost one
+        assert strikes < CONCEDE_AFTER_STRIKES
+
+
+def test_watching_the_panel_claims_the_peak_for_this_machine(tmp_path):
+    """With no screen lock to go on, an open panel is the only evidence of
+    where the user is — so it must not be the machine that gives way."""
+    d = make_daemon(tmp_path, FakePeak())
+    d._strikes = CONCEDE_AFTER_STRIKES
+
+    asyncio.run(d.handle("status", {"watch": True}))
+
+    assert d._strikes == 0
+    assert conceded(d._handoff, d._strikes) is False

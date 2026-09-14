@@ -100,20 +100,21 @@ REST_CHECK_S = 900.0
 # QuickPuff can only have it by taking it. A link that dies sooner than this
 # was almost certainly taken rather than lost.
 CONTENTION_LINK_S = 45.0
+# Held this long with nobody taking it: this machine plainly has the Peak to
+# itself, so forget the whole argument.
+SETTLED_LINK_S = 300.0
 # How far to stand off after each strike, so two machines stop trading the
 # Peak back and forth every couple of seconds.
-CONTENTION_BACKOFF_S = (8.0, 20.0, 45.0, 120.0)
+CONTENTION_BACKOFF_S = (5.0, 15.0, 40.0)
 # Once this machine has given best, it only looks in this often — enough to
 # notice the other computer going away, rare enough to stop interrupting it.
 CONCEDED_BACKOFF_S = 300.0
 # Running a QuickPuff command claims the Peak for this machine: strikes clear,
 # and a seat logind calls away still counts as in use for this long.
 CLAIM_WINDOW_S = 120.0
-# Losing this many links in a row means the other computer is winning, and
-# every further try steals a working link from whoever is actually using it.
-# Strikes sort this out on their own: a machine that holds a link resets to
-# zero, so only the one that keeps losing ever gets here.
-CONCEDE_AFTER_STRIKES = 6
+# Losing this far ahead of winning means the other computer wants the Peak
+# more, and every further try takes a working link off whoever is using it.
+CONCEDE_AFTER_STRIKES = 4
 
 # Edits to a heat profile re-read just the profiles once taps stop for this long.
 PROFILE_REFRESH_SETTLE_S = 0.8
@@ -173,6 +174,22 @@ def idle_sleep_due(idle_since: Optional[float], now: float, last_user_cmd: float
     if idle_since is None or watching:
         return False
     return now - idle_since >= IDLE_SLEEP_S and now - last_user_cmd >= IDLE_SLEEP_S
+
+
+def strikes_after_drop(strikes: int, held: float) -> int:
+    """A running score of how badly this machine is losing the Peak.
+
+    Anything it barely held was taken; anything it kept for a while it won.
+    Winning takes one off rather than wiping the slate, because two machines
+    trading the Peak a minute at a time reset each other forever and neither
+    ever gives way — which is exactly what they were seen doing. Scoring it
+    this way, the machine that loses more often than it wins still climbs.
+    """
+    if held < CONTENTION_LINK_S:
+        return strikes + 1
+    if held >= SETTLED_LINK_S:
+        return 0
+    return max(0, strikes - 1)
 
 
 def reconnect_delay(strikes: int, base: float) -> float:
@@ -486,16 +503,17 @@ class QuickPuffDaemon:
             # Battery saver, or handoff, let go of the Peak on purpose.
             return
         held = time.monotonic() - self._link_started
-        if held < CONTENTION_LINK_S:
-            self._strikes += 1
+        was, self._strikes = self._strikes, strikes_after_drop(self._strikes, held)
+        if self._strikes > was:
             log.warning(
                 "BLE link dropped after %.0fs — another computer may want this Peak (strike %d)",
                 held,
                 self._strikes,
             )
+        elif self._strikes < was:
+            log.warning("BLE link dropped after %.0fs — held it (strike %d)", held, self._strikes)
         else:
-            self._strikes = 0
-            log.warning("BLE link dropped")
+            log.warning("BLE link dropped after %.0fs", held)
         # connect() retries internally, so each drop starts the clock for the
         # next attempt: without this a third try is measured from the first and
         # a short link reads as a long one.
@@ -1535,6 +1553,11 @@ class QuickPuffDaemon:
                 # The panel is open: poll at full speed while it keeps asking.
                 was_watching = self._watching()
                 self._last_watch = time.monotonic()
+                # Someone has the panel open here, which with the screen never
+                # locking is the only sign left of which computer is in use.
+                # Take it as this machine's claim, so the one being looked at
+                # isn't the one that gives way.
+                self._strikes = 0
                 if not was_watching:
                     self._poll_wake.set()
                 if self._resting:
