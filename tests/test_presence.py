@@ -95,3 +95,60 @@ def test_with_nothing_to_ask_the_seat_counts_as_occupied():
     p = SeatPresence()
     assert p.active is True
     assert p.available is False
+
+
+def test_a_wedged_helper_is_not_left_running(monkeypatch):
+    """wait_for gives up on the waiting, not on the process. Without a kill
+    this leaves one behind every poll for the life of the daemon."""
+    killed = []
+
+    class Hung:
+        def __init__(self):
+            self.returncode = None
+
+        async def wait(self):
+            if killed:
+                return -9
+            await asyncio.sleep(30)
+
+        def kill(self):
+            killed.append(True)
+            self.returncode = -9
+
+    async def fake_exec(*a, **kw):
+        return Hung()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr("quickpuff.presence.LOCK_PROBE_TIMEOUT_S", 0.01)
+    p = SeatPresence()
+    p._helper = "/does/not/matter"
+    assert asyncio.run(p._read_screen_lock()) is False
+    assert killed == [True], "a helper that never answers was left running"
+
+
+def test_the_lock_watch_survives_an_unexpected_failure(monkeypatch):
+    """If this loop dies the daemon keeps running and silently never hands the
+    Peak over again — the worst kind of failure for this feature."""
+    p = SeatPresence()
+    p._helper = "/does/not/matter"
+    calls = []
+
+    async def flaky():
+        calls.append(True)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return True
+
+    p._read_screen_lock = flaky
+    monkeypatch.setattr("quickpuff.presence.LOCK_POLL_S", 0)
+
+    async def run():
+        task = asyncio.create_task(p._lock_loop())
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if len(calls) >= 2:
+                break
+        task.cancel()
+
+    asyncio.run(run())
+    assert len(calls) >= 2, "the loop stopped watching after one failure"

@@ -38,6 +38,9 @@ PROPS_IFACE = "org.freedesktop.DBus.Properties"
 # Reads the compositor, not the Peak, so this is cheap — a few milliseconds.
 # Handing the Peak over a few seconds late costs nothing.
 LOCK_POLL_S = 15.0
+# The helper answers in milliseconds; this only guards against a wedged
+# compositor, and is a constant so tests can shorten it.
+LOCK_PROBE_TIMEOUT_S = 5.0
 LOCK_HELPER = "omarchy-hyprland-session-locked"
 
 
@@ -118,14 +121,23 @@ class SeatPresence:
     async def _read_screen_lock(self) -> bool:
         """0 locked, 1 unlocked, 2 undetermined — and undetermined means the
         compositor was never asked, so it is not a lock."""
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 self._helper,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            code = await asyncio.wait_for(proc.wait(), timeout=5.0)
+            code = await asyncio.wait_for(proc.wait(), timeout=LOCK_PROBE_TIMEOUT_S)
         except Exception as exc:
+            # wait_for gives up on waiting, not on the process: without this a
+            # wedged helper would be left behind every poll, forever.
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
             log.debug("lock helper failed: %s", exc)
             return self._screen_locked
         return code == 0
@@ -133,10 +145,18 @@ class SeatPresence:
     async def _lock_loop(self) -> None:
         while True:
             await asyncio.sleep(LOCK_POLL_S)
-            locked = await self._read_screen_lock()
-            if locked != self._screen_locked:
-                self._screen_locked = locked
-                self._settle()
+            try:
+                locked = await self._read_screen_lock()
+                if locked != self._screen_locked:
+                    self._screen_locked = locked
+                    self._settle()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # This loop is the only thing watching the lock. If it dies the
+                # daemon keeps running and quietly never hands the Peak over
+                # again, so carry on and try at the next poll.
+                log.exception("Lock poll failed; still watching")
 
     def _changed(self, iface: str, changed: dict, invalidated: list) -> None:
         if iface != SESSION_IFACE:
