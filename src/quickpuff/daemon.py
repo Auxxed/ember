@@ -994,6 +994,10 @@ class QuickPuffDaemon:
         if self._yielded:
             return
         self._yielded = True
+        # A Peak let go for another computer is no longer resting to save its
+        # battery, whatever it was doing a moment ago. Leaving both set makes
+        # the bar say "Resting to save battery" about a Peak someone else has.
+        self._end_rest()
         self._cancel_saver_sleep()
         self._stop_poll()
         dev, self.device = self.device, None

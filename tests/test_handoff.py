@@ -364,3 +364,29 @@ def test_a_rest_check_in_still_happens_when_someone_is_here(tmp_path):
     d._rest = noop
     asyncio.run(d._check_in())
     assert tried == [True]
+
+
+def test_letting_go_while_resting_stops_calling_it_resting(tmp_path):
+    """Battery saver's wording wins in the bar, so leaving both flags set
+    tells the user the Peak is saving battery when another computer has it."""
+    d = make_daemon(tmp_path, FakePeak())
+    d._resting = True
+    d.status["resting"] = True
+
+    asyncio.run(d._yield_peak())
+
+    assert d.status["resting"] is False
+    assert d._resting is False
+    assert d.status["handed_off"] is True
+
+
+def test_the_bar_says_handed_off_not_resting_after_letting_go(tmp_path, capsys):
+    d = make_daemon(tmp_path, FakePeak())
+    d._resting = True
+    d.status["resting"] = True
+    d.status["battery"] = 73
+    asyncio.run(d._yield_peak())
+
+    print_waybar(d.status)
+    out = json.loads(capsys.readouterr().out)
+    assert out["tooltip"].startswith("Another computer has the Peak")
