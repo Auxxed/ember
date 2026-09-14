@@ -325,3 +325,41 @@ def test_slow_setup_is_not_counted_as_time_holding_the_peak(tmp_path):
     d._link_started = time.monotonic()
     d._on_ble_drop()
     assert d._strikes == 1
+
+
+# --- battery saver must not go behind handoff's back -------------------------
+
+def test_a_rest_check_in_leaves_the_peak_alone_when_nobody_is_here(tmp_path):
+    """Resting hides drops from the strike count, so a check-in would take the
+    Peak off the other computer with nothing to notice it had happened."""
+    d = make_daemon(tmp_path, active=False)
+    d._last_user_cmd = float("-inf")
+    d._resting = True
+    tried = []
+
+    async def fake_connect(*a, **kw):
+        tried.append(True)
+        return d.status
+
+    d._connect = fake_connect
+    asyncio.run(d._check_in())
+    assert tried == []
+
+
+def test_a_rest_check_in_still_happens_when_someone_is_here(tmp_path):
+    d = make_daemon(tmp_path, active=True)
+    d._resting = True
+    tried = []
+
+    async def fake_connect(*a, **kw):
+        tried.append(True)
+        return d.status
+
+    async def noop(*a, **kw):
+        return None
+
+    d._connect = fake_connect
+    d._sync_usage_safe = noop
+    d._rest = noop
+    asyncio.run(d._check_in())
+    assert tried == [True]

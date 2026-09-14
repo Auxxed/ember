@@ -1094,6 +1094,14 @@ class QuickPuffDaemon:
     async def _check_in(self) -> None:
         """Reconnect briefly while resting: fresh battery and synced dabs, then
         rest again unless someone is using the Peak."""
+        if not self._hold_allowed():
+            # Nobody is at this computer. A check-in would take the Peak off
+            # whoever is using the other one, and resting hides the drop from
+            # the strike count, so this is the only place that can say no.
+            # A fresh battery reading isn't worth that; the next check-in can
+            # have it once someone is back.
+            log.info("Rest check-in skipped: the Peak belongs to another computer for now")
+            return
         try:
             await self._connect(self._connect_name, self._connect_mac, profiles=False, sync=False)
         except Exception as exc:
