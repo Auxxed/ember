@@ -583,6 +583,10 @@ class QuickPuffDaemon:
             on_attempt=self._mark_attempt,
         )
         await ble.connect()
+        # The link is usable now, so restart the clock: setting up can take
+        # tens of seconds on a busy radio, and that time was never time spent
+        # holding the Peak. Counting it made a short link look like a long one.
+        self._link_started = time.monotonic()
         try:
             await ble.require_peak_pro()
         except Exception:
@@ -934,7 +938,13 @@ class QuickPuffDaemon:
         """A fresh try at the link starts the clock that decides whether the
         next drop was the other computer taking it. connect() retries inside
         itself, and a try that fails outright never reaches _on_ble_drop, so
-        timing from the call would read a short link as a long one."""
+        timing from the call would read a short link as a long one.
+
+        A drop before the link is usable lands a strike, which is what we
+        want: losing it mid-handshake is the clearest sign of the other
+        computer. Once it is usable the clock restarts, so an established
+        link is judged on how long it actually lasted.
+        """
         self._link_started = time.monotonic()
 
     def _seat_occupied(self) -> bool:

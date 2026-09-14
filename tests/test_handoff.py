@@ -289,3 +289,15 @@ def test_ble_reports_every_internal_attempt(tmp_path):
     body = src.split("for attempt in range", 1)
     assert len(body) == 2, "connect() no longer loops over attempts"
     assert "self._on_attempt()" in body[1], "on_attempt is not called inside the retry loop"
+
+
+def test_slow_setup_is_not_counted_as_time_holding_the_peak(tmp_path):
+    """Establishing a link can take tens of seconds on a busy radio. Counting
+    that as time we held the Peak made short links look long and lost strikes.
+    """
+    d = make_daemon(tmp_path, FakePeak())
+    d._mark_attempt()
+    # ...a slow setup, then the link becomes usable, then dies soon after.
+    d._link_started = time.monotonic()
+    d._on_ble_drop()
+    assert d._strikes == 1
