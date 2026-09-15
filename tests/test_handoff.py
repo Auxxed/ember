@@ -470,3 +470,44 @@ def test_watching_the_panel_claims_the_peak_for_this_machine(tmp_path):
 
     assert d._strikes == 0
     assert conceded(d._handoff, d._strikes) is False
+
+
+# --- the bar must not claim a link that is gone -----------------------------
+
+def test_status_stops_claiming_a_link_that_died_during_the_snapshot(tmp_path):
+    """A connect writes its snapshot after talking to the Peak. If the link
+    died in between, the drop has already fired and nothing is left to clear
+    the flag — so the bar kept showing a temperature for a Peak the other
+    computer had taken, while the log said this machine had given way.
+    """
+    d = make_daemon(tmp_path)
+    d.device = None
+    d.status.update(
+        {"connected": True, "handed_off": True, "heater_temp_f": 77,
+         "operating_state": "Idle", "operating_state_id": 6, "battery": 71}
+    )
+
+    result = asyncio.run(d.handle("status", {}))
+
+    assert result["connected"] is False
+    assert result["heater_temp_f"] is None
+    assert result["operating_state"] == "Handed off"
+
+
+def test_a_live_link_is_left_alone(tmp_path):
+    d = make_daemon(tmp_path, FakePeak())
+    d.status.update({"connected": True, "heater_temp_f": 77, "operating_state_id": 6})
+    result = asyncio.run(d.handle("status", {}))
+    assert result["connected"] is True
+    assert result["heater_temp_f"] == 77
+
+
+def test_the_bar_reads_handed_off_after_a_link_dies_mid_snapshot(tmp_path, capsys):
+    d = make_daemon(tmp_path)
+    d.device = None
+    d.status.update({"connected": True, "handed_off": True, "battery": 71,
+                     "heater_temp_f": 77, "operating_state_id": 6})
+    print_waybar(asyncio.run(d.handle("status", {})))
+    out = json.loads(capsys.readouterr().out)
+    assert out["tooltip"].startswith("Another computer has the Peak")
+    assert "77" not in out["text"]

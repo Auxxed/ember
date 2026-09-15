@@ -797,6 +797,30 @@ class QuickPuffDaemon:
         await self._broadcast_event("status", self.status)
         return self.status
 
+    def _reconcile_connected(self) -> None:
+        """Never report a link that isn't there.
+
+        A connect writes its snapshot after talking to the Peak, and if the
+        link died in between, the drop has already been and gone: nothing is
+        left to clear the flag. The bar then shows a temperature and a battery
+        for a Peak another computer is holding, which reads as "still mine"
+        when the daemon's own log says it gave way.
+        """
+        if not self.status.get("connected"):
+            return
+        if self.device and self.device.is_connected:
+            return
+        self.status["connected"] = False
+        self.status["heater_temp_c"] = None
+        self.status["heater_temp_f"] = None
+        if self.status.get("handed_off"):
+            self.status["operating_state"] = "Handed off"
+        elif self.status.get("resting"):
+            self.status["operating_state"] = "Resting"
+        else:
+            self.status["operating_state"] = "Disconnected"
+        self.status["operating_state_id"] = -1
+
     def _require_device(self) -> PuffcoBLE:
         if not self.device or not self.device.is_connected:
             raise RuntimeError("Not connected")
@@ -1563,6 +1587,7 @@ class QuickPuffDaemon:
                 if self._resting:
                     self._wake_soon()
             self._expire_lantern()
+            self._reconcile_connected()
             self.status["telemetry"] = history.get_stats()
             return self.status
         if cmd == "refresh":
